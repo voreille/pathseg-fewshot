@@ -7,14 +7,14 @@ from lightning.pytorch.utilities import rank_zero_info
 from torch import nn
 from torch.utils.data import DataLoader
 
-from pathseg.datasets.anorak_dataset import (
+from pathseg_fewshot.datasets.anorak_dataset import (
     Dataset,
     PredictDataset,
     FewShotSupportDataset,
 )
-from pathseg.datasets.lightning_data_module import LightningDataModule
-from pathseg.datasets.transforms import CustomTransforms, CustomTransformsVaryingSize
-from pathseg.datasets.utils import RepeatDataset
+from pathseg_fewshot.datasets.lightning_data_module import LightningDataModule
+from pathseg_fewshot.datasets.transforms import CustomTransforms, CustomTransformsVaryingSize
+from pathseg_fewshot.datasets.utils import RepeatDataset
 
 
 class ANORAK(LightningDataModule):
@@ -79,7 +79,7 @@ class ANORAK(LightningDataModule):
         )
 
     def compute_class_weights(self):
-        from pathseg.datasets.stats import compute_class_weights_from_ids
+        from pathseg_fewshot.datasets.stats import compute_class_weights_from_ids
 
         train_ids, _, _ = self._get_split_ids()
         return compute_class_weights_from_ids(

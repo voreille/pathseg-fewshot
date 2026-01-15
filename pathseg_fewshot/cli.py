@@ -7,8 +7,8 @@ from gitignore_parser import parse_gitignore
 from lightning.pytorch import cli
 from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary
 
-from pathseg.datasets.lightning_data_module import LightningDataModule
-from pathseg.training.lightning_module import LightningModule
+from pathseg_fewshot.datasets.lightning_data_module import LightningDataModule
+from pathseg_fewshot.training.lightning_module import LightningModule
 
 
 def _has_logger(trainer) -> bool:

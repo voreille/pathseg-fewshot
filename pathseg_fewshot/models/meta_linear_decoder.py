@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pathseg.models.histo_encoder import Encoder
+from pathseg_fewshot.models.histo_encoder import Encoder
 
 
 class AttnPool(nn.Module):

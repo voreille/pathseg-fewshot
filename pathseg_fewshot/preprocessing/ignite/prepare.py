@@ -14,7 +14,7 @@ import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 
-from pathseg.preprocessing.utils import (
+from pathseg_fewshot.preprocessing.utils import (
     load_label_map_ids,
     load_label_mask,
     mpp_to_nominal_magnification,

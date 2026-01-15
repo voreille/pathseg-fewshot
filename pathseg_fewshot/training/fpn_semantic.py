@@ -5,9 +5,9 @@ import torch.nn as nn
 import wandb
 from torch.optim.lr_scheduler import PolynomialLR
 
-from pathseg.training.histo_loss import CrossEntropyDiceLoss
-from pathseg.training.lightning_module import LightningModule
-from pathseg.training.tiler import Tiler
+from pathseg_fewshot.training.histo_loss import CrossEntropyDiceLoss
+from pathseg_fewshot.training.lightning_module import LightningModule
+from pathseg_fewshot.training.tiler import Tiler
 
 
 class FPNSemantic(LightningModule):

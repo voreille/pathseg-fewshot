@@ -5,9 +5,9 @@ import torch.nn.functional as F
 import wandb
 from torch.optim.lr_scheduler import PolynomialLR
 
-from pathseg.training.lightning_module import LightningModule
-from pathseg.training.mask2former_loss import Mask2formerLoss
-from pathseg.training.tiler import Tiler
+from pathseg_fewshot.training.lightning_module import LightningModule
+from pathseg_fewshot.training.mask2former_loss import Mask2formerLoss
+from pathseg_fewshot.training.tiler import Tiler
 
 
 class Mask2formerSemantic(LightningModule):

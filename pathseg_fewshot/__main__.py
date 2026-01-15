@@ -1,4 +1,4 @@
-from pathseg.cli import main
+from pathseg_fewshot.cli import main
 
 if __name__ == "__main__":
     main()

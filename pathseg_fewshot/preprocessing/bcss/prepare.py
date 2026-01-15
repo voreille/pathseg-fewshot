@@ -10,25 +10,41 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from pathseg.preprocessing.utils import (
+from pathseg_fewshot.preprocessing.utils import (
     check_mask,
-    load_label_map_ids,
     load_label_mask,
     mpp_to_nominal_magnification,
     stage_file,
     get_shape_from_image,
+    translate_mask,
 )
 
 logger = logging.getLogger(__name__)
 
-LABEL_MAP = {
-    "background": 0,
-    "cribriform": 1,
-    "micropapillary": 2,
-    "solid": 3,
-    "papillary": 4,
-    "acinar": 5,
-    "lepidic": 6,
+DST_LABEL_MAP = {
+    "Background": 0,  # Rest
+    "Invasive tumor": 1,
+    "Tumor-associated stroma": 2,
+    "In-situ tumor": 3,
+    "Healthy gland": 4,
+    "Necrosis not in-situ": 5,
+    "Inflamed stroma": 6,
+    "Ignore": 255,  # this class contains regions of several tissue compartments that are not specifically annotated in the other categories; examples are healthy stroma, erythrocytes, adipose tissue, skin, nipple, etc.
+}
+SRC_LABEL_MAP = {
+    "Unannotated": 0,
+    "Invasive tumor": 1,
+    "Tumor-associated stroma": 2,
+    "In-situ tumor": 3,
+    "Healthy gland": 4,
+    "Necrosis not in-situ": 5,
+    "Inflamed stroma": 6,
+    "Rest": 7,  # this class contains regions of several tissue compartments that are not specifically annotated in the other categories; examples are healthy stroma, erythrocytes, adipose tissue, skin, nipple, etc.
+}
+
+LABEL_TRANSLATION = {
+    "Unannotated": "Ignore",
+    "Rest": "Background",
 }
 MPP = 0.5  # microns per pixel at 20x magnification
 
@@ -52,7 +68,7 @@ MPP = 0.5  # microns per pixel at 20x magnification
 @click.option(
     "--dataset-id",
     type=str,
-    default="anorak",
+    default="bcss",
     show_default=True,
     help="Dataset identifier written into metadata.csv.",
 )
@@ -88,8 +104,8 @@ def main(
         images/he/*.png
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    src_images_dir = raw_data_dir / "image"
-    src_masks_dir = raw_data_dir / "mask"
+    src_images_dir = raw_data_dir / "images"
+    src_masks_dir = raw_data_dir / "masks"
 
     src_image_paths = [
         p
@@ -107,11 +123,14 @@ def main(
     masks_dir.mkdir(exist_ok=True)
 
     # Write label map
-    dst_label_map = output_dir / "label_map.json"
-    with open(dst_label_map, "w") as f:
-        json.dump(LABEL_MAP, f, indent=2)
+    dst_label_map_file = output_dir / "label_map.json"
+    with open(dst_label_map_file, "w") as f:
+        json.dump(DST_LABEL_MAP, f, indent=2)
 
-    valid_label_ids = load_label_map_ids(dst_label_map)
+    with open(output_dir / "src_label_map.json", "w") as f:
+        json.dump(SRC_LABEL_MAP, f, indent=2)
+
+    valid_label_ids = set(SRC_LABEL_MAP.values())
 
     rows: List[Dict[str, Any]] = []
     class_rows: List[Dict[str, Any]] = []
@@ -121,6 +140,16 @@ def main(
     ):
         src_img = src_image_paths[sample_idx]
         src_msk = src_mask_paths[sample_idx]
+
+        h, w = get_shape_from_image(src_img)
+        h_mask, w_mask = get_shape_from_image(src_msk)
+        if (h, w) != (h_mask, w_mask):
+            logger.warning(
+                f"Image and mask shape mismatch for sample_id={sample_id}: "
+                f"image shape={(h, w)}, mask shape={(h_mask, w_mask)} skipping sample for now"
+            )
+            continue
+
 
         if not src_img.exists():
             raise FileNotFoundError(f"Missing image: {src_img}")
@@ -139,21 +168,18 @@ def main(
 
         # Validate/correct the staged mask in place (if needed)
         check_mask(dst_msk, sample_id=sample_id, valid_label_ids=valid_label_ids)
+        translate_mask(
+            dst_msk,
+            dst_msk,
+            src_label_map=SRC_LABEL_MAP,
+            dst_label_map=DST_LABEL_MAP,
+            label_translation=LABEL_TRANSLATION,
+        )
 
         # Metadata (from CSV)
-        h, w = get_shape_from_image(dst_img)
-        h_mask, w_mask = get_shape_from_image(dst_msk)
-        if (h, w) != (h_mask, w_mask):
-            raise ValueError(
-                f"Image and mask shape mismatch for sample_id={sample_id}: "
-                f"image shape={(h, w)}, mask shape={(h_mask, w_mask)}"
-            )
-
-        mpp = (
-            MPP  # fixed for IGNITE, maybe need to change if you want to prepare for 10x
-        )
+        mpp = MPP  # fixed for BCSS from TIGER, TODO: check more thoroughly
         magnification = mpp_to_nominal_magnification(mpp)
-        group = None
+        group = "-".join(sample_id.split("-")[:3])  # TCGA Patient ID
 
         rows.append(
             {
