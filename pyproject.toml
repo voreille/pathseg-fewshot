@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pathseg"
+name = "pathseg-fewshot"
 version = "0.1.0"
-description = "Benchmarking vision foundation models for histopathology semantic segmentation, this repo is a fork of https://github.com/tue-mps/benchmark-vfm-ss/"
+description = "Benchmarking vision foundation models for histopathology few-shot semantic segmentation. Forked/refactored from https://github.com/tue-mps/benchmark-vfm-ss/"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,7 +14,6 @@ authors = [
   { name = "Valentin Oreille" }
 ]
 
-[project]
 dependencies = [
   "click>=8.0",
   "pandas>=2.0",
@@ -33,8 +32,8 @@ parquet = ["pyarrow>=12"]
 dev = ["ipykernel==6.29.4", "pytest", "ruff", "pre-commit"]
 
 [project.scripts]
-pathseg = "pathseg.cli:main"
+pathseg-fewshot = "pathseg_fewshot.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pathseg*"]
+include = ["pathseg_fewshot*"]
