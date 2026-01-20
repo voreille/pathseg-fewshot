@@ -6,7 +6,7 @@ import seaborn as sns
 # %%
 # Load CSV
 df = pd.read_csv(
-    "/home/valentin/workspaces/pathseg-benchmark/data/fss/class_index_preview.csv"
+    "/home/valentin/data/fss/class_index_preview.csv"
 )
 
 # Filter small areas

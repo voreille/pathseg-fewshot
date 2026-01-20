@@ -153,7 +153,7 @@ def main(
             MPP  # fixed for IGNITE, maybe need to change if you want to prepare for 10x
         )
         magnification = mpp_to_nominal_magnification(mpp)
-        group = None
+        group = sample_id
 
         rows.append(
             {

@@ -113,9 +113,19 @@ def main(
         if p.suffix.lower() in {".png", ".jpg", ".jpeg"}
     ]
     src_image_paths = sorted(src_image_paths, key=lambda p: p.stem)
+
     sample_ids = [p.stem for p in src_image_paths]
-    src_mask_paths = [p for p in src_masks_dir.iterdir() if p.stem in sample_ids]
-    src_mask_paths = sorted(src_mask_paths, key=lambda p: p.stem)
+    src_data_mapping = {}
+    for sample_id in sample_ids:
+        image_path = src_images_dir / f"{sample_id}.png"
+        mask_path = src_masks_dir / f"{sample_id}.png"
+        if not mask_path.exists() or not image_path.exists():
+            logger.warning(f"Missing mask/image for sample_id={sample_id}, skipping")
+            continue
+        src_data_mapping[sample_id] = {
+            "image_path": src_images_dir / f"{sample_id}.png",
+            "mask_path": src_masks_dir / f"{sample_id}.png",
+        }
 
     images_dir = output_dir / "images"
     masks_dir = output_dir / "masks_semantic"
@@ -135,11 +145,11 @@ def main(
     rows: List[Dict[str, Any]] = []
     class_rows: List[Dict[str, Any]] = []
 
-    for sample_idx, sample_id in tqdm(
-        enumerate(sample_ids), total=len(sample_ids), desc="Preparing samples"
+    for sample_id, paths in tqdm(
+        src_data_mapping.items(), total=len(src_data_mapping), desc="Preparing samples"
     ):
-        src_img = src_image_paths[sample_idx]
-        src_msk = src_mask_paths[sample_idx]
+        src_img = paths["image_path"]
+        src_msk = paths["mask_path"]
 
         h, w = get_shape_from_image(src_img)
         h_mask, w_mask = get_shape_from_image(src_msk)
@@ -149,7 +159,6 @@ def main(
                 f"image shape={(h, w)}, mask shape={(h_mask, w_mask)} skipping sample for now"
             )
             continue
-
 
         if not src_img.exists():
             raise FileNotFoundError(f"Missing image: {src_img}")

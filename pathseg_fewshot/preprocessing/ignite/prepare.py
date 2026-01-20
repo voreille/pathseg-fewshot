@@ -367,7 +367,7 @@ def main(
         h, w = _parse_shape(r["shape"])
         mpp = _compute_mpp_from_area(float(r["area_mm2"]), h=h, w=w)
         magnification = mpp_to_nominal_magnification(mpp)
-        group = r.get("patient_id", None)
+        group = str(r.get("patient_id", None))
 
         rows.append(
             {

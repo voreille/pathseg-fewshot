@@ -18,12 +18,26 @@
             "name": "Python Debugger: Prepare BCSS from TIGER",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/pathseg/preprocessing/bcss/prepare.py",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/bcss/prepare.py",
             "args": [
                 "--raw-data-dir",
                 "/mnt/nas7/data/Personal/Valentin/aws_downloads/tiger-training/wsirois/roi-level-annotations/tissue-bcss",
                 "--output-dir",
-                "${workspaceFolder}/data/fss/bcss",
+                "/home/valentin/data/fss/bcss",
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+            },
+        },
+        {
+            "name": "Python Debugger: Build FSS index",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/build_indexes.py",
+            "args": [
+                "--root-dir",
+                "/home/valentin/data/fss",
             ],
             "console": "integratedTerminal",
             "env": {
@@ -34,12 +48,12 @@
             "name": "Python Debugger: Prepare IGNITE",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/pathseg/preprocessing/ignite/prepare.py",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/ignite/prepare.py",
             "args": [
                 "--raw-data-dir",
                 "/mnt/nas7/data/Personal/Valentin/IGNITE",
                 "--output-dir",
-                "${workspaceFolder}/data/fss/ignite",
+                "/home/valentin/data/fss/ignite",
             ],
             "console": "integratedTerminal",
             "env": {
@@ -50,19 +64,18 @@
             "name": "Python Debugger: Prepare ANORAK",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/pathseg/preprocessing/anorak/prepare.py",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/anorak/prepare.py",
             "args": [
                 "--raw-data-dir",
                 "/mnt/nas7/data/Personal/Valentin/ANORAK_not_resized",
                 "--output-dir",
-                "${workspaceFolder}/data/fss/anorak",
+                "/home/valentin/data/fss/anorak",
             ],
             "console": "integratedTerminal",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}",
             },
         },
- 
         {
             "name": "Python: main.py fit ANORAK Linear Semantic",
             "type": "debugpy",
