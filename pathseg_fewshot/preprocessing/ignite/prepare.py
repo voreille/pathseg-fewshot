@@ -414,7 +414,7 @@ def main(
                     "sample_id": sample_id,
                     "dataset_class_id": int(cid),
                     "group": group,
-                    "area_um2": class_area,
+                    "class_area_um2": class_area,
                     "image_relpath": str(Path("images") / img_name),
                     "mask_relpath": str(Path("masks_semantic") / msk_name),
                     "mpp": mpp,

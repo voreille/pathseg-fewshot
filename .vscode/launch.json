@@ -45,6 +45,25 @@
             },
         },
         {
+            "name": "Python Debugger: Build FSS tile index",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/build_index_tile.py",
+            "args": [
+                "--root-dir",
+                "${workspaceFolder}/data/fss",
+                "--output-dir",
+                "${workspaceFolder}/data/index",
+                "--tile-size",
+                "448",
+                "--concat-global",
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+            },
+        },
+        {
             "name": "Python Debugger: Prepare IGNITE",
             "type": "debugpy",
             "request": "launch",

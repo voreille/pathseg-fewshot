@@ -1,24 +1,32 @@
 # %%
+from pathlib import Path
+
 import matplotlib.pyplot as plt
-import numpy as np  
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from pathseg_fewshot.datasets.episode_sampler import (
+    ConsumingEpisodeSampler,
+    StatelessEpisodeSampler,
+)
+
 # %%
 # Load CSV
-df = pd.read_csv("/home/valentin/data/fss/class_index_preview.csv")
-
+df = pd.read_parquet(
+    "/home/val/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+)
 # Filter small areas
 AREA_THRESHOLD = 5000  # adjust
-df = df[df["area_um2"] >= AREA_THRESHOLD]
-df["area_px"] = df["area_um2"] / (df["mpp"] ** 2)
+df = df[df["class_area_um2"] >= AREA_THRESHOLD]
+df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
 
 
 # %%
 g = sns.catplot(
     data=df,
     x="dataset_class_id",
-    y="area_px",
+    y="class_area_px",
     col="dataset_id",
     kind="violin",
     inner="quartile",
@@ -93,6 +101,8 @@ sample_ids = sample_support_without_replacement(
     dataset_id="anorak",
 )
 
+# %%
+df.columns
 
 # %%
 df_split = (
@@ -104,9 +114,10 @@ df_split = (
             "dataset_dir": "first",
             "image_relpath": "first",
             "mask_relpath": "first",
-            "mpp": "first",
-            "width": "first",
-            "height": "first",
+            "mpp_x": "first",
+            "mpp_y": "first",
+            "image_width": "first",
+            "image_height": "first",
         }
     )
     .reset_index()
@@ -144,8 +155,12 @@ df_split.head()
 
 
 # %%
+output_dir = Path("/home/valentin/workspaces/pathseg-fewshot/data/splits/scenario_1/")
+output_dir.mkdir(parents=True, exist_ok=True)
+
 df_split.to_csv(
-    "/home/valentin/workspaces/pathseg-fewshot/data/splits/scenario_1/split.csv", index=False
+    output_dir / "split.csv",
+    index=False,
 )
 
 # %%

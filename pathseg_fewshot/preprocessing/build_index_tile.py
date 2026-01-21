@@ -46,6 +46,11 @@ def _load_mask(path: Path) -> np.ndarray:
     required=True,
 )
 @click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
     "--include",
     type=str,
     default=None,
@@ -78,24 +83,18 @@ def _load_mask(path: Path) -> np.ndarray:
     help="Ignore label id (optional).",
 )
 @click.option(
-    "--out-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Output dir for global artifacts (default: root-dir).",
-)
-@click.option(
     "--write-per-dataset/--no-write-per-dataset", default=True, show_default=True
 )
 @click.option("--concat-global/--no-concat-global", default=False, show_default=True)
 def main(
     root_dir: Path,
+    output_dir: Path,
     include: Optional[str],
     exclude: Optional[str],
     tile_size: int,
     stride: Optional[int],
     min_class_pixels: int,
     ignore_id: int,
-    out_dir: Optional[Path],
     write_per_dataset: bool,
     concat_global: bool,
 ) -> None:
@@ -109,8 +108,9 @@ def main(
         masks_semantic/...
     """
     stride = int(stride) if stride is not None else int(tile_size)
-    out_dir = out_dir or root_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+    output_dir = output_dir / f"tile_index_t{tile_size}_s{stride}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     include_set = set(x.strip() for x in include.split(",")) if include else None
     exclude_set = set(x.strip() for x in exclude.split(",")) if exclude else set()
@@ -133,6 +133,8 @@ def main(
     all_tiles: List[pd.DataFrame] = []
 
     for ds_dir in dataset_dirs:
+        out_ds_dir = output_dir / ds_dir.name
+        out_ds_dir.mkdir(parents=True, exist_ok=True)
         dataset_id = ds_dir.name
         meta = _read_metadata(ds_dir).copy()
         if "dataset_id" not in meta.columns:
@@ -147,6 +149,11 @@ def main(
             mask_path = ds_dir / mask_rel
             mask = _load_mask(mask_path)
             H, W = mask.shape
+            if H != r["height"] or W != r["width"]:
+                raise ValueError(
+                    f"Size mismatch for {dataset_id}/{sample_id}: "
+                    f"metadata ({r['width']}x{r['height']}) vs mask ({W}x{H})"
+                )
 
             xs = _iter_anchors_1d(W, tile_size, stride)
             ys = _iter_anchors_1d(H, tile_size, stride)
@@ -188,6 +195,12 @@ def main(
                                 "group": group,
                                 "image_relpath": str(r["image_relpath"]),
                                 "mask_relpath": str(r["mask_relpath"]),
+                                "dataset_dir": str(ds_dir),
+                                "mpp_x": float(r["mpp_x"]),
+                                "mpp_y": float(r["mpp_y"]),
+                                "magnification": int(r["magnification"]),
+                                "image_width": int(W),
+                                "image_height": int(H),
                                 "tile_size": int(tile_size),
                                 "stride": int(stride),
                                 "x": int(x),
@@ -197,6 +210,8 @@ def main(
                                 "tile_id": f"{x}_{y}",
                                 "dataset_class_id": int(cid),
                                 "class_pixels": int(class_pixels),
+                                "class_area_um2": float(class_pixels)
+                                * (r["mpp_x"] * r["mpp_y"]),
                                 "valid_pixels": int(valid_pixels),
                                 "class_frac_valid": float(
                                     class_pixels / max(1, valid_pixels)
@@ -210,7 +225,7 @@ def main(
         tile_df = pd.DataFrame(rows)
         if write_per_dataset:
             tile_df.to_parquet(
-                ds_dir / f"tile_index_t{tile_size}_s{stride}.parquet", index=False
+                out_ds_dir / f"tile_index_t{tile_size}_s{stride}.parquet", index=False
             )
 
         all_tiles.append(tile_df)
@@ -218,7 +233,11 @@ def main(
     if concat_global:
         global_df = pd.concat(all_tiles, ignore_index=True)
         global_df.to_parquet(
-            out_dir / f"tile_index_t{tile_size}_s{stride}.parquet", index=False
+            output_dir / f"tile_index_t{tile_size}_s{stride}.parquet", index=False
         )
 
     click.echo("Done.")
+
+
+if __name__ == "__main__":
+    main()
