@@ -1,16 +1,21 @@
 # %%
 from pathlib import Path
+from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from PIL import Image
 
-from pathseg_fewshot.datasets.episode_sampler import (
-    MinImagesConsumingEpisodeSampler,
-    EpisodeSpec,
+from pathseg_fewshot.datasets.episode import (
+    EpisodeRefs,
     load_episodes_json,
     save_episodes_json,
+)
+from pathseg_fewshot.datasets.episode_sampler import (
+    EpisodeSpec,
+    MinImagesConsumingEpisodeSampler,
 )
 
 # %%
@@ -245,6 +250,57 @@ df_split.to_csv(
 
 # %%
 save_episodes_json(
-    episode_lists,
     output_dir / "val_episodes.json",
+    episode_lists,
 )
+
+# %%
+loaded_episodes = load_episodes_json(output_dir / "val_episodes.json")
+
+# %%
+loaded_episodes[0].support[0]
+
+
+# %%
+def save_episodes_as_tiles(
+    root_dir: Path, output_dir: Path, episodes: List[EpisodeRefs]
+) -> None:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = []
+    for e_idx, e in enumerate(episodes):
+        episode_dir = output_dir / f"episode_{e_idx:04d}"
+        episode_dir.mkdir(parents=True, exist_ok=True)
+
+        support_dir = episode_dir / "support"
+        support_dir.mkdir(parents=True, exist_ok=True)
+
+        query_dir = episode_dir / "query"
+        query_dir.mkdir(parents=True, exist_ok=True)
+
+        for r in e.support:
+
+            img_path = episode_dir / f"support_{r.sample_id}_image.png"
+            mask_path = episode_dir / f"support_{r.sample_id}_mask.png"
+
+            img = Image.open(root_dir / r.dataset_id / r.image_relpath)
+            mask = Image.open(root_dir / r.dataset_id / r.mask_relpath)
+
+            img.save(img_path)
+            mask.save(mask_path)
+        for r in e.query:
+            d["query"].append(
+                {
+                    "dataset_id": r.dataset_id,
+                    "sample_id": r.sample_id,
+                    "image_relpath": r.image_relpath,
+                    "mask_relpath": r.mask_relpath,
+                    "class_id": int(r.class_id),
+                    "crop": r.crop,
+                }
+            )
+        payload.append(d)
+
+    with (output_dir / "episodes.json").open("w") as f:
+        json.dump(payload, f, indent=2)
