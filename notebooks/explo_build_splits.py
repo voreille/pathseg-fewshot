@@ -7,18 +7,21 @@ import pandas as pd
 import seaborn as sns
 
 from pathseg_fewshot.datasets.episode_sampler import (
-    ConsumingEpisodeSampler,
-    StatelessEpisodeSampler,
+    MinImagesConsumingEpisodeSampler,
+    EpisodeSpec,
+    load_episodes_json,
+    save_episodes_json,
 )
 
 # %%
 # Load CSV
 df = pd.read_parquet(
-    "/home/val/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+    "/home/valentin/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
 )
+# %%
 # Filter small areas
-AREA_THRESHOLD = 5000  # adjust
-df = df[df["class_area_um2"] >= AREA_THRESHOLD]
+# AREA_THRESHOLD = 5000  # adjust
+# df = df[df["class_area_um2"] >= AREA_THRESHOLD]
 df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
 
 
@@ -164,3 +167,84 @@ df_split.to_csv(
 )
 
 # %%
+
+episode_spec = EpisodeSpec(ways=5, shots=10, queries=2)
+sampler = MinImagesConsumingEpisodeSampler(df, episode_spec, unique_by="row")
+episode_lists = sampler.build_episode_list(
+    episodes_per_dataset=2, dataset_ids=["bcss", "ignite"]
+)
+
+# %%
+episodes_meta = pd.DataFrame(
+    columns=["sample_id", "dataset_id", "episode_idx", "class_id", "is_query"]
+)
+
+# %%
+episode_lists[0]
+
+# %%
+for episode_idx, episode in enumerate(episode_lists):
+    for s in ["support", "query"]:
+        sample_refs = getattr(episode, s)
+        for ref in sample_refs:
+            episodes_meta = pd.concat(
+                [
+                    episodes_meta,
+                    pd.DataFrame(
+                        {
+                            "sample_id": [ref.sample_id],
+                            "dataset_id": [ref.dataset_id],
+                            "episode_idx": [episode_idx],
+                            "class_id": [ref.class_id],
+                            "is_query": [s == "query"],
+                        }
+                    ),
+                ],
+                ignore_index=True,
+            )
+
+# %%
+episodes_meta.head()
+# %%
+episodes_meta.loc[episodes_meta["dataset_id"] == "ignite", "sample_id"].nunique()
+
+# %%
+episodes_meta.loc[episodes_meta["dataset_id"] == "bcss", "sample_id"].nunique()
+
+# %%
+bcss_sample_ids = (
+    episodes_meta.loc[episodes_meta["dataset_id"] == "bcss", "sample_id"]
+    .unique()
+    .tolist()
+)
+# %%
+ignite_sample_ids = (
+    episodes_meta.loc[episodes_meta["dataset_id"] == "ignite", "sample_id"]
+    .unique()
+    .tolist()
+)
+
+
+# %%
+df_split.loc[
+    df_split["sample_id"].isin(bcss_sample_ids) & (df_split["dataset_id"] == "bcss"),
+    "split",
+] = "val"
+
+# %%
+df_split.loc[
+    df_split["sample_id"].isin(ignite_sample_ids)
+    & (df_split["dataset_id"] == "ignite"),
+    "split",
+] = "val"
+# %%
+df_split.to_csv(
+    output_dir / "split.csv",
+    index=False,
+)
+
+# %%
+save_episodes_json(
+    episode_lists,
+    output_dir / "val_episodes.json",
+)

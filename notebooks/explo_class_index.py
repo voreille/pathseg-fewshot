@@ -6,7 +6,7 @@ import seaborn as sns
 # %%
 # Load CSV
 df = pd.read_parquet(
-    "/home/val/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+    "/home/valentin/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
 )
 # %%
 df.head()

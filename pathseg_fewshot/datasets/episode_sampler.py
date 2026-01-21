@@ -1,61 +1,12 @@
-# episode_sampler.py
 from __future__ import annotations
 
-import json
+
 import random
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-
-# -----------------------
-# Dataclasses
-# -----------------------
-
-@dataclass(frozen=True)
-class EpisodeSpec:
-    ways: int  # N
-    shots: int  # K
-    queries: int  # Q
-    crop_size: int = 448
-
-
-@dataclass(frozen=True)
-class CropBox:
-    left: int
-    top: int
-    right: int
-    bottom: int
-
-
-@dataclass(frozen=True)
-class WholeImage:
-    """Sentinel crop spec meaning 'use whole image'."""
-    pass
-
-
-CropSpec = Union[CropBox, WholeImage]
-
-
-@dataclass(frozen=True)
-class SampleRef:
-    dataset_id: str
-    sample_id: str
-    image_relpath: str
-    mask_relpath: str
-    class_id: int
-    crop: Optional[CropSpec] = None  # None -> transform decides (e.g., random crop)
-
-
-@dataclass(frozen=True)
-class EpisodeRefs:
-    dataset_id: str
-    class_ids: List[int]          # length N
-    support: List[SampleRef]      # length N*K
-    query: List[SampleRef]        # length N*Q
-
+from pathseg_fewshot.datasets.episode import EpisodeRefs, SampleRef, EpisodeSpec
 
 # -----------------------
 # Helpers
@@ -69,6 +20,8 @@ _REQUIRED_COLUMNS = {
     "mask_relpath",
 }
 
+_TILE_COLUMNS = {"origin_x", "origin_y", "w", "h"}
+
 
 def _check_class_index(df: pd.DataFrame) -> None:
     missing = _REQUIRED_COLUMNS - set(df.columns)
@@ -76,114 +29,64 @@ def _check_class_index(df: pd.DataFrame) -> None:
         raise ValueError(f"class_index is missing required columns: {missing}")
 
 
-def _build_indexes(
-    df: pd.DataFrame,
-) -> Tuple[List[str], Dict[str, pd.DataFrame], Dict[Tuple[str, int], pd.DataFrame]]:
+def _build_crop_from_row(r: pd.Series) -> Optional[tuple[int, int, int, int]]:
     """
-    Returns:
-      dataset_ids,
-      by_dataset,
-      by_dataset_class
+    If tile columns exist, build a PIL crop box (left, top, right, bottom).
+    Otherwise return None (whole image).
     """
-    df = df.copy()
-    df["dataset_class_id"] = df["dataset_class_id"].astype(int)
-
-    by_dataset: Dict[str, pd.DataFrame] = {}
-    by_dataset_class: Dict[Tuple[str, int], pd.DataFrame] = {}
-
-    for ds_id, sub in df.groupby("dataset_id"):
-        by_dataset[str(ds_id)] = sub
-        for cid, sub2 in sub.groupby("dataset_class_id"):
-            by_dataset_class[(str(ds_id), int(cid))] = sub2
-
-    dataset_ids = sorted(by_dataset.keys())
-    if not dataset_ids:
-        raise ValueError("No datasets available in class_index.")
-
-    return dataset_ids, by_dataset, by_dataset_class
-
-
-def _sample_episode_from_pools(
-    *,
-    rng: random.Random,
-    spec: EpisodeSpec,
-    dataset_id: str,
-    by_dataset: Dict[str, pd.DataFrame],
-    by_dataset_class: Dict[Tuple[str, int], pd.DataFrame],
-    pool_filter_fn,  # (pool_df: pd.DataFrame) -> pd.DataFrame
-) -> Optional[Tuple[List[int], List[Tuple[int, pd.Series]], List[Tuple[int, pd.Series]]]]:
-    """
-    Core episode construction logic. Shared by stateless and consuming samplers.
-
-    Returns:
-      (class_ids, support_rows, query_rows)
-    where support_rows/query_rows are lists of (row_index, row_series).
-
-    Returns None if an episode cannot be formed (e.g. not enough available rows).
-    """
-    ds_df = by_dataset[dataset_id]
-    available_classes = sorted(ds_df["dataset_class_id"].unique().tolist())
-    if len(available_classes) < spec.ways:
+    if not _TILE_COLUMNS.issubset(r.index):
         return None
+    x = int(r["origin_x"])
+    y = int(r["origin_y"])
+    w = int(r["w"])
+    h = int(r["h"])
+    return (x, y, x + w, y + h)
 
-    class_ids = rng.sample(available_classes, k=spec.ways)
-    needed = spec.shots + spec.queries
 
-    support_rows: List[Tuple[int, pd.Series]] = []
-    query_rows: List[Tuple[int, pd.Series]] = []
+def _build_pools(
+    df: pd.DataFrame,
+) -> Tuple[List[str], Dict[Tuple[str, int], List[int]]]:
+    """
+    Build fast pools:
+      (dataset_id, class_id) -> list of row indices
+    Returns:
+      dataset_ids (sorted),
+      pool_indices
+    """
+    dataset_ids = sorted(df["dataset_id"].astype(str).unique().tolist())
 
-    for cid in class_ids:
-        pool = by_dataset_class[(dataset_id, int(cid))]
-        pool = pool_filter_fn(pool)
-        if len(pool) < needed:
-            return None
+    pool_indices: Dict[Tuple[str, int], List[int]] = {}
+    # groupby on both keys -> indices
+    for (ds, cid), sub in df.groupby(["dataset_id", "dataset_class_id"]):
+        pool_indices[(str(ds), int(cid))] = sub.index.astype(int).tolist()
 
-        chosen = pool.sample(n=needed, random_state=rng.randrange(10**9))
-        # NOTE: iterrows preserves original index values (important for consuming sampler)
-        for j, (row_idx, row) in enumerate(chosen.iterrows()):
-            if j < spec.shots:
-                support_rows.append((int(row_idx), row))
-            else:
-                query_rows.append((int(row_idx), row))
+    return dataset_ids, pool_indices
 
-    return [int(x) for x in class_ids], support_rows, query_rows
+
+def _build_rows_by_sample(df: pd.DataFrame) -> Dict[Tuple[str, str], List[int]]:
+    """
+    (dataset_id, sample_id) -> list of row indices
+    Used for unique_by="sample" marking without O(N) scans.
+    """
+    out: Dict[Tuple[str, str], List[int]] = {}
+    for (ds, sid), sub in df.groupby(["dataset_id", "sample_id"]):
+        out[(str(ds), str(sid))] = sub.index.astype(int).tolist()
+    return out
 
 
 def _rows_to_episode(
     *,
+    df: pd.DataFrame,
     dataset_id: str,
     class_ids: List[int],
-    support_rows: List[Tuple[int, pd.Series]],
-    query_rows: List[Tuple[int, pd.Series]],
-    # optional crop assignment hook
-    crop_for_row_fn=None,  # (row: pd.Series, split: "support"|"query", idx: int) -> Optional[CropSpec]
+    support_idx: List[int],
+    query_idx: List[int],
 ) -> EpisodeRefs:
     support: List[SampleRef] = []
     query: List[SampleRef] = []
 
-    if crop_for_row_fn is None:
-        def crop_for_row_fn(row, split, idx):  # noqa: ANN001
-            return None
-
-    for i, (_, r) in enumerate(support_rows):
-        support.append(
-            SampleRef(
-                dataset_id=str(r["dataset_id"]),
-                sample_id=str(r["sample_id"]),
-                image_relpath=str(r["image_relpath"]),
-                mask_relpath=str(r["mask_relpath"]),
-                class_id=int(r["dataset_class_id"]) if False else int(r["dataset_class_id"])  # unused; kept for clarity
-            )
-        )
-
-    # The class_id in SampleRef should be the episode-selected class, not necessarily r["dataset_class_id"]?
-    # In your original design, row is already for that class; so it's safe to use row["dataset_class_id"].
-    # But we *must* write class_id = the selected class id. We'll reconstruct properly:
-    # We'll re-walk support_rows/query_rows grouped in the same order we sampled (by cid).
-    #
-    # To avoid ambiguity, we rebuild with row["dataset_class_id"] (same as cid).
-    support = []
-    for i, (_, r) in enumerate(support_rows):
+    for idx in support_idx:
+        r = df.loc[idx]
         support.append(
             SampleRef(
                 dataset_id=str(r["dataset_id"]),
@@ -191,12 +94,12 @@ def _rows_to_episode(
                 image_relpath=str(r["image_relpath"]),
                 mask_relpath=str(r["mask_relpath"]),
                 class_id=int(r["dataset_class_id"]),
-                crop=crop_for_row_fn(r, "support", i),
+                crop=_build_crop_from_row(r),
             )
         )
 
-    query = []
-    for i, (_, r) in enumerate(query_rows):
+    for idx in query_idx:
+        r = df.loc[idx]
         query.append(
             SampleRef(
                 dataset_id=str(r["dataset_id"]),
@@ -204,26 +107,85 @@ def _rows_to_episode(
                 image_relpath=str(r["image_relpath"]),
                 mask_relpath=str(r["mask_relpath"]),
                 class_id=int(r["dataset_class_id"]),
-                crop=crop_for_row_fn(r, "query", i),
+                crop=_build_crop_from_row(r),
             )
         )
 
     return EpisodeRefs(
-        dataset_id=dataset_id,
-        class_ids=class_ids,
-        support=support,
-        query=query,
+        dataset_id=dataset_id, class_ids=class_ids, support=support, query=query
     )
+
+
+def _available_indices(pool: List[int], used_rows: Optional[set[int]]) -> List[int]:
+    if not used_rows:
+        return pool
+    # pool is a python list; filter
+    return [i for i in pool if i not in used_rows]
+
+
+def _sample_k(rng: random.Random, pool: List[int], k: int) -> Optional[List[int]]:
+    if len(pool) < k:
+        return None
+    # rng.sample gives unique items
+    return rng.sample(pool, k=k)
+
+
+def _group_by_sample_id(df: pd.DataFrame, indices: List[int]) -> Dict[str, List[int]]:
+    """
+    Group row indices by sample_id.
+    """
+    out: Dict[str, List[int]] = {}
+    for idx in indices:
+        sid = str(df.at[idx, "sample_id"])
+        out.setdefault(sid, []).append(int(idx))
+    return out
+
+
+def _greedy_pack_tiles(
+    *,
+    rng: random.Random,
+    df: pd.DataFrame,
+    indices: List[int],
+    k: int,
+    forbidden_sample_ids: set[str],
+) -> Optional[List[int]]:
+    """
+    Greedily pick tiles from as few sample_ids as possible.
+    - indices: available row indices for a given (dataset_id, class_id)
+    - forbidden_sample_ids: do not select from these sample_ids
+    Returns k indices or None.
+    """
+    by_sid = _group_by_sample_id(df, indices)
+
+    # remove forbidden
+    for sid in list(by_sid.keys()):
+        if sid in forbidden_sample_ids:
+            by_sid.pop(sid, None)
+
+    # sort sample_ids by how many tiles they offer (descending)
+    sids = sorted(by_sid.keys(), key=lambda s: len(by_sid[s]), reverse=True)
+
+    chosen: List[int] = []
+    for sid in sids:
+        if len(chosen) >= k:
+            break
+        tiles = by_sid[sid]
+        # shuffle within this image for randomness
+        rng.shuffle(tiles)
+        take = min(k - len(chosen), len(tiles))
+        chosen.extend(tiles[:take])
+
+    if len(chosen) < k:
+        return None
+    return chosen
 
 
 # -----------------------
 # Base API
 # -----------------------
 
+
 class EpisodeSamplerBase:
-    """
-    Minimal “interface” for episode samplers.
-    """
     def sample_episode(
         self,
         *,
@@ -235,23 +197,27 @@ class EpisodeSamplerBase:
 
 
 # -----------------------
-# Stateless sampler (safe in DataLoader workers)
+# Stateless sampler (train)
 # -----------------------
+
 
 class StatelessEpisodeSampler(EpisodeSamplerBase):
     """
-    Stateless episode sampler:
-      - safe with DataLoader(num_workers>0)
+    Stateless sampling:
       - deterministic given seed
-      - does NOT enforce no-overlap across episodes (that’s a split responsibility)
+      - safe in DataLoader workers
+      - no 'used' tracking
     """
 
     def __init__(self, class_index: pd.DataFrame, spec: EpisodeSpec) -> None:
         _check_class_index(class_index)
         self.df = class_index.copy()
+        self.df["dataset_id"] = self.df["dataset_id"].astype(str)
+        self.df["sample_id"] = self.df["sample_id"].astype(str)
         self.df["dataset_class_id"] = self.df["dataset_class_id"].astype(int)
         self.spec = spec
-        self.dataset_ids, self._by_dataset, self._by_dataset_class = _build_indexes(self.df)
+
+        self.dataset_ids, self._pool_indices = _build_pools(self.df)
 
     def sample_episode(
         self,
@@ -261,51 +227,66 @@ class StatelessEpisodeSampler(EpisodeSamplerBase):
         max_tries: int = 50,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
+        spec = self.spec
 
         for _ in range(int(max_tries)):
-            ds_id = dataset_id if dataset_id is not None else rng.choice(self.dataset_ids)
-            if ds_id not in self._by_dataset:
-                raise ValueError(f"Unknown dataset_id={ds_id}")
-
-            out = _sample_episode_from_pools(
-                rng=rng,
-                spec=self.spec,
-                dataset_id=ds_id,
-                by_dataset=self._by_dataset,
-                by_dataset_class=self._by_dataset_class,
-                pool_filter_fn=lambda pool: pool,  # no filtering
+            ds_id = (
+                dataset_id if dataset_id is not None else rng.choice(self.dataset_ids)
             )
-            if out is None:
+
+            # classes available in that dataset = keys in pool_indices
+            classes = sorted(
+                {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
+            )
+            if len(classes) < spec.ways:
                 if dataset_id is not None:
                     return None
                 continue
 
-            class_ids, support_rows, query_rows = out
+            class_ids = rng.sample(classes, k=spec.ways)
+
+            support_idx: List[int] = []
+            query_idx: List[int] = []
+            needed = spec.shots + spec.queries
+
+            ok = True
+            for cid in class_ids:
+                pool = self._pool_indices.get((ds_id, int(cid)), [])
+                chosen = _sample_k(rng, pool, needed)
+                if chosen is None:
+                    ok = False
+                    break
+                support_idx.extend(chosen[: spec.shots])
+                query_idx.extend(chosen[spec.shots :])
+
+            if not ok:
+                if dataset_id is not None:
+                    return None
+                continue
+
             return _rows_to_episode(
+                df=self.df,
                 dataset_id=ds_id,
-                class_ids=class_ids,
-                support_rows=support_rows,
-                query_rows=query_rows,
+                class_ids=[int(x) for x in class_ids],
+                support_idx=support_idx,
+                query_idx=query_idx,
             )
 
         return None
 
 
 # -----------------------
-# Consuming sampler (for building fixed banks)
+# Consuming sampler (build banks)
 # -----------------------
+
 
 class ConsumingEpisodeSampler(EpisodeSamplerBase):
     """
-    Stateful sampler enforcing no-overlap across produced episodes.
-
-    NOTE: Not safe to rely on this for uniqueness when used inside a multi-worker DataLoader,
-    because each worker will have its own instance/state. Use it offline (single process) to
-    build an episode bank, then serialize it for val/test.
+    Stateful sampler enforcing no overlap across produced episodes.
 
     unique_by:
-      - "sample": uniqueness by (dataset_id, sample_id) across all episodes (recommended)
-      - "row":    uniqueness by row index in class_index
+      - "row":    uniqueness at tile-row level (recommended for tile indices)
+      - "sample": uniqueness at image level (very restrictive for tile indices)
     """
 
     def __init__(
@@ -313,46 +294,40 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         class_index: pd.DataFrame,
         spec: EpisodeSpec,
         *,
-        unique_by: str = "sample",
+        unique_by: str = "row",
     ) -> None:
-        if unique_by not in {"sample", "row"}:
-            raise ValueError("unique_by must be 'sample' or 'row'")
+        if unique_by not in {"row", "sample"}:
+            raise ValueError("unique_by must be 'row' or 'sample'")
 
         _check_class_index(class_index)
         self.df = class_index.copy()
+        self.df["dataset_id"] = self.df["dataset_id"].astype(str)
+        self.df["sample_id"] = self.df["sample_id"].astype(str)
         self.df["dataset_class_id"] = self.df["dataset_class_id"].astype(int)
         self.spec = spec
         self.unique_by = unique_by
 
-        self.dataset_ids, self._by_dataset, self._by_dataset_class = _build_indexes(self.df)
+        self.dataset_ids, self._pool_indices = _build_pools(self.df)
+        self._rows_by_sample = (
+            _build_rows_by_sample(self.df) if unique_by == "sample" else {}
+        )
 
-        self._used_samples: set[Tuple[str, str]] = set()
         self._used_rows: set[int] = set()
 
     def reset_used(self) -> None:
-        self._used_samples.clear()
         self._used_rows.clear()
 
-    def _pool_filter(self, pool: pd.DataFrame) -> pd.DataFrame:
+    def _mark_used_rows(self, picked_row_indices: List[int]) -> None:
         if self.unique_by == "row":
-            if not self._used_rows:
-                return pool
-            return pool.loc[~pool.index.isin(self._used_rows)]
+            self._used_rows.update(int(i) for i in picked_row_indices)
+            return
 
-        # unique_by == "sample"
-        if not self._used_samples:
-            return pool
-
-        used = self._used_samples
-        keys = list(zip(pool["dataset_id"].astype(str), pool["sample_id"].astype(str)))
-        mask = [k not in used for k in keys]
-        return pool.loc[mask]
-
-    def _mark_used(self, row_idx: int, row: pd.Series) -> None:
-        if self.unique_by == "row":
-            self._used_rows.add(int(row_idx))
-        else:
-            self._used_samples.add((str(row["dataset_id"]), str(row["sample_id"])))
+        # unique_by == "sample": mark all rows belonging to the same (dataset_id, sample_id)
+        for idx in picked_row_indices:
+            ds = str(self.df.at[idx, "dataset_id"])
+            sid = str(self.df.at[idx, "sample_id"])
+            for rid in self._rows_by_sample.get((ds, sid), []):
+                self._used_rows.add(int(rid))
 
     def sample_episode(
         self,
@@ -362,38 +337,55 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         max_tries: int = 50,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
+        spec = self.spec
+        needed = spec.shots + spec.queries
 
         for _ in range(int(max_tries)):
-            ds_id = dataset_id if dataset_id is not None else rng.choice(self.dataset_ids)
-            if ds_id not in self._by_dataset:
-                raise ValueError(f"Unknown dataset_id={ds_id}")
-
-            out = _sample_episode_from_pools(
-                rng=rng,
-                spec=self.spec,
-                dataset_id=ds_id,
-                by_dataset=self._by_dataset,
-                by_dataset_class=self._by_dataset_class,
-                pool_filter_fn=self._pool_filter,
+            ds_id = (
+                dataset_id if dataset_id is not None else rng.choice(self.dataset_ids)
             )
-            if out is None:
+
+            classes = sorted(
+                {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
+            )
+            if len(classes) < spec.ways:
                 if dataset_id is not None:
                     return None
                 continue
 
-            class_ids, support_rows, query_rows = out
+            class_ids = rng.sample(classes, k=spec.ways)
 
-            # commit usage
-            for row_idx, row in support_rows:
-                self._mark_used(row_idx, row)
-            for row_idx, row in query_rows:
-                self._mark_used(row_idx, row)
+            support_idx: List[int] = []
+            query_idx: List[int] = []
+            ok = True
+
+            for cid in class_ids:
+                base_pool = self._pool_indices.get((ds_id, int(cid)), [])
+                avail = _available_indices(base_pool, self._used_rows)
+
+                chosen = _sample_k(rng, avail, needed)
+                if chosen is None:
+                    ok = False
+                    break
+
+                support_idx.extend(chosen[: spec.shots])
+                query_idx.extend(chosen[spec.shots :])
+
+            if not ok:
+                if dataset_id is not None:
+                    return None
+                continue
+
+            # commit used
+            self._mark_used_rows(support_idx)
+            self._mark_used_rows(query_idx)
 
             return _rows_to_episode(
+                df=self.df,
                 dataset_id=ds_id,
-                class_ids=class_ids,
-                support_rows=support_rows,
-                query_rows=query_rows,
+                class_ids=[int(x) for x in class_ids],
+                support_idx=support_idx,
+                query_idx=query_idx,
             )
 
         return None
@@ -412,7 +404,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         for ds in dataset_ids:
             for j in range(int(episodes_per_dataset)):
                 ep_seed = (int(seed) * 10_000) + (hash(ds) % 1_000) * 100 + j
-                ep = self.sample_episode(seed=ep_seed, dataset_id=ds, max_tries=100)
+                ep = self.sample_episode(seed=ep_seed, dataset_id=ds, max_tries=200)
                 if ep is None:
                     break
                 bank.append(ep)
@@ -420,108 +412,106 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
 
 
 # -----------------------
-# Serialization
+# Min-images consuming sampler (packs tiles into few images)
 # -----------------------
 
-def save_episodes_json(path: Path, episodes: Sequence[EpisodeRefs]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
 
-    def encode_crop(c: Optional[CropSpec]):
-        if c is None:
-            return None
-        if isinstance(c, WholeImage):
-            return {"type": "whole"}
-        if isinstance(c, CropBox):
-            return {"type": "box", **asdict(c)}
-        raise TypeError(f"Unknown crop type: {type(c)}")
+class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
+    """
+    Like ConsumingEpisodeSampler, but tries to use as few sample_id as possible.
 
-    payload = []
-    for e in episodes:
-        d = {
-            "dataset_id": e.dataset_id,
-            "class_ids": list(map(int, e.class_ids)),
-            "support": [],
-            "query": [],
-        }
-        for r in e.support:
-            d["support"].append(
-                {
-                    "dataset_id": r.dataset_id,
-                    "sample_id": r.sample_id,
-                    "image_relpath": r.image_relpath,
-                    "mask_relpath": r.mask_relpath,
-                    "class_id": int(r.class_id),
-                    "crop": encode_crop(r.crop),
+    Additional constraint (per class):
+      - support and query are sampled from disjoint images (no shared sample_id)
+
+    Notes:
+      - This packs support tiles into 1 (or few) images if possible,
+        and packs query tiles into 1 (or few) *different* images.
+    """
+
+    def sample_episode(
+        self,
+        *,
+        seed: int,
+        dataset_id: Optional[str] = None,
+        max_tries: int = 50,
+    ) -> Optional[EpisodeRefs]:
+        rng = random.Random(int(seed))
+        spec = self.spec
+
+        for _ in range(int(max_tries)):
+            ds_id = (
+                dataset_id if dataset_id is not None else rng.choice(self.dataset_ids)
+            )
+
+            classes = sorted(
+                {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
+            )
+            if len(classes) < spec.ways:
+                if dataset_id is not None:
+                    return None
+                continue
+
+            class_ids = rng.sample(classes, k=spec.ways)
+
+            support_idx: List[int] = []
+            query_idx: List[int] = []
+            ok = True
+
+            for cid in class_ids:
+                base_pool = self._pool_indices.get((ds_id, int(cid)), [])
+                avail = _available_indices(base_pool, self._used_rows)
+
+                # 1) pick support (pack into few images)
+                support_for_class = _greedy_pack_tiles(
+                    rng=rng,
+                    df=self.df,
+                    indices=avail,
+                    k=spec.shots,
+                    forbidden_sample_ids=set(),
+                )
+                if support_for_class is None:
+                    ok = False
+                    break
+
+                support_sids = {
+                    str(self.df.at[i, "sample_id"]) for i in support_for_class
                 }
-            )
-        for r in e.query:
-            d["query"].append(
-                {
-                    "dataset_id": r.dataset_id,
-                    "sample_id": r.sample_id,
-                    "image_relpath": r.image_relpath,
-                    "mask_relpath": r.mask_relpath,
-                    "class_id": int(r.class_id),
-                    "crop": encode_crop(r.crop),
-                }
-            )
-        payload.append(d)
 
-    with path.open("w") as f:
-        json.dump(payload, f, indent=2)
+                # 2) pick query from different images than support (pack as well)
+                remaining = [
+                    i
+                    for i in avail
+                    if str(self.df.at[i, "sample_id"]) not in support_sids
+                ]
+                query_for_class = _greedy_pack_tiles(
+                    rng=rng,
+                    df=self.df,
+                    indices=remaining,
+                    k=spec.queries,
+                    forbidden_sample_ids=set(),
+                )
+                if query_for_class is None:
+                    ok = False
+                    break
 
+                support_idx.extend(support_for_class)
+                query_idx.extend(query_for_class)
 
-def load_episodes_json(path: Path) -> List[EpisodeRefs]:
-    path = Path(path)
-    with path.open("r") as f:
-        data = json.load(f)
+            if not ok:
+                if dataset_id is not None:
+                    return None
+                continue
 
-    def decode_crop(c):
-        if c is None:
-            return None
-        t = c.get("type")
-        if t == "whole":
-            return WholeImage()
-        if t == "box":
-            return CropBox(
-                left=int(c["left"]),
-                top=int(c["top"]),
-                right=int(c["right"]),
-                bottom=int(c["bottom"]),
-            )
-        raise ValueError(f"Invalid crop payload: {c}")
+            # commit used
+            self._mark_used_rows(support_idx)
+            self._mark_used_rows(query_idx)
 
-    episodes: List[EpisodeRefs] = []
-    for e in data:
-        support = [
-            SampleRef(
-                dataset_id=r["dataset_id"],
-                sample_id=r["sample_id"],
-                image_relpath=r["image_relpath"],
-                mask_relpath=r["mask_relpath"],
-                class_id=int(r["class_id"]),
-                crop=decode_crop(r.get("crop")),
+            return _rows_to_episode(
+                df=self.df,
+                dataset_id=ds_id,
+                class_ids=[int(x) for x in class_ids],
+                support_idx=support_idx,
+                query_idx=query_idx,
             )
-            for r in e["support"]
-        ]
-        query = [
-            SampleRef(
-                dataset_id=r["dataset_id"],
-                sample_id=r["sample_id"],
-                image_relpath=r["image_relpath"],
-                mask_relpath=r["mask_relpath"],
-                class_id=int(r["class_id"]),
-                crop=decode_crop(r.get("crop")),
-            )
-            for r in e["query"]
-        ]
-        episodes.append(
-            EpisodeRefs(
-                dataset_id=e["dataset_id"],
-                class_ids=list(map(int, e["class_ids"])),
-                support=support,
-                query=query,
-            )
-        )
-    return episodes
+
+        return None

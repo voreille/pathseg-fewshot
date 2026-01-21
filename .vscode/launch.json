@@ -51,7 +51,7 @@
             "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/build_index_tile.py",
             "args": [
                 "--root-dir",
-                "${workspaceFolder}/data/fss",
+                "/home/valentin/data/fss",
                 "--output-dir",
                 "${workspaceFolder}/data/index",
                 "--tile-size",
