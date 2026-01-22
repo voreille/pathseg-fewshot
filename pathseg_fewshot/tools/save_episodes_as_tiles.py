@@ -6,6 +6,7 @@ from typing import List, Tuple
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 from pathseg_fewshot.datasets.episode import EpisodeRefs, SampleRef, load_episodes_json
 
@@ -174,7 +175,7 @@ def save_episodes_as_tiles(
         json.dump(payload, f, indent=2)
 
     # Now render episodes
-    for e_idx, e in enumerate(episodes):
+    for e_idx, e in enumerate(tqdm(episodes, desc="Rendering episodes")):
         episode_dir = output_dir / f"episode_{e_idx:04d}"
         support_dir = episode_dir / "support"
         query_dir = episode_dir / "query"
@@ -204,13 +205,13 @@ def save_episodes_as_tiles(
 
 if __name__ == "__main__":
     episodes_json = Path(
-        "/home/valentin/workspaces/pathseg-fewshot/data/splits/scenario_1/val_episodes.json"
+        "/home/val/workspaces/pathseg-fewshot/data/splits/scenario_1/val_episodes.json"
     )
     episodes = load_episodes_json(episodes_json) 
     save_episodes_as_tiles(
-        root_dir=Path("/home/valentin/workspaces/pathseg-fewshot/data/fss/"),
+        root_dir=Path("/home/val/workspaces/pathseg-fewshot/data/fss/"),
         output_dir=Path(
-            "/home/valentin/workspaces/pathseg-fewshot/data/visualizations/val_episodes_tiles/"
+            "/home/val/workspaces/pathseg-fewshot/data/visualizations/val_episodes_tiles/"
         ),
         episodes=episodes,
         alpha=0.45,

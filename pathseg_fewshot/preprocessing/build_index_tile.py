@@ -162,8 +162,8 @@ def main(
             present = set(np.unique(mask).tolist())
             if ignore_id in present:
                 present.remove(ignore_id)
-            if 0 in present:
-                present.remove(0)
+            # if 0 in present:
+            #     present.remove(0)
 
             for y in ys:
                 for x in xs:
@@ -213,6 +213,8 @@ def main(
                                 "class_area_um2": float(class_pixels)
                                 * (r["mpp_x"] * r["mpp_y"]),
                                 "valid_pixels": int(valid_pixels),
+                                "frac_valid": float(valid_pixels)
+                                / (tile_size * tile_size),
                                 "class_frac_valid": float(
                                     class_pixels / max(1, valid_pixels)
                                 ),

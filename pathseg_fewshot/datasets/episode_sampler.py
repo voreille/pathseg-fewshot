@@ -335,6 +335,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         seed: int,
         dataset_id: Optional[str] = None,
         max_tries: int = 50,
+        always_sample_class_id=None,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
         spec = self.spec
@@ -353,7 +354,17 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
                     return None
                 continue
 
-            class_ids = rng.sample(classes, k=spec.ways)
+            if always_sample_class_id is not None:
+                classes_to_sample_from = list(set(classes) - {always_sample_class_id})
+                k = spec.ways - 1
+            else:
+                classes_to_sample_from = classes
+                k = spec.ways
+
+            class_ids = rng.sample(classes_to_sample_from, k=k)
+            if always_sample_class_id is not None:
+                if always_sample_class_id not in class_ids:
+                    class_ids[0] = always_sample_class_id
 
             support_idx: List[int] = []
             query_idx: List[int] = []
