@@ -1,10 +1,12 @@
 # %%
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from dotenv import load_dotenv
 
 from pathseg_fewshot.datasets.episode import (
     load_episodes_json,
@@ -15,15 +17,20 @@ from pathseg_fewshot.datasets.episode_sampler import (
     MinImagesConsumingEpisodeSampler,
 )
 
+load_dotenv()
+data_root = Path(os.getenv("DATA_ROOT", "../data/")).resolve()
+fss_data_root = Path(os.getenv("FSS_DATA_ROOT", "../data/fss")).resolve()
+
 # %%
 # Load CSV
 df = pd.read_parquet(
-    "/home/val/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+    data_root / "index/tile_index_t448_s448/tile_index_t448_s448.parquet"
 )
 # %%
 # Filter small areas
 df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
 if "frac_valid" not in df.columns:
+    print("Computing frac_valid column")
     df["frac_valid"] = df["valid_pixels"] / (df["w"] * df["h"])
 
 df = df[df["frac_valid"] >= 0.75]
@@ -33,7 +40,10 @@ df = df[df["class_area_um2"] >= AREA_THRESHOLD]
 
 
 # %%
-df.head()
+df[df["dataset_id"] == "anorak"].to_csv(
+    data_root / "explorations/anorak_filtered_tiles.csv",
+    index=False,
+)
 # %%
 g = sns.catplot(
     data=df,
@@ -167,7 +177,7 @@ df_split.head()
 
 
 # %%
-output_dir = Path("/home/val/workspaces/pathseg-fewshot/data/splits/scenario_1/")
+output_dir = fss_data_root / "splits/scenario_1/"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 df_split.to_csv(
@@ -180,7 +190,9 @@ df_split.to_csv(
 episode_spec = EpisodeSpec(ways=5, shots=10, queries=2)
 sampler = MinImagesConsumingEpisodeSampler(df, episode_spec, unique_by="row")
 episode_lists = sampler.build_episode_list(
-    episodes_per_dataset=2, dataset_ids=["bcss", "ignite"]
+    episodes_per_dataset=2,
+    dataset_ids=["bcss", "ignite"],
+    always_sample_class_id=0,  # ensure background is present
 )
 
 # %%

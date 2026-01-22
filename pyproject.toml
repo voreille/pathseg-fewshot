@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 parquet = ["pyarrow>=12"]
-dev = ["ipykernel==6.29.4", "pytest", "ruff", "pre-commit"]
+dev = ["ipykernel==6.29.4", "pytest", "ruff", "pre-commit", "python-dotenv"]
 
 [project.scripts]
 pathseg-fewshot = "pathseg_fewshot.cli:main"

@@ -225,6 +225,7 @@ class StatelessEpisodeSampler(EpisodeSamplerBase):
         seed: int,
         dataset_id: Optional[str] = None,
         max_tries: int = 50,
+        always_sample_class_id: Optional[int] = None,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
         spec = self.spec
@@ -239,11 +240,21 @@ class StatelessEpisodeSampler(EpisodeSamplerBase):
                 {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
             )
             if len(classes) < spec.ways:
-                if dataset_id is not None:
-                    return None
-                continue
+                raise ValueError(
+                    f"Not enough classes (n={len(classes)}) "
+                    f"to sample the episode {spec} ways from dataset '{ds_id}'"
+                )
 
-            class_ids = rng.sample(classes, k=spec.ways)
+            if always_sample_class_id is not None:
+                classes_to_sample_from = list(set(classes) - {always_sample_class_id})
+                class_ids = rng.sample(classes_to_sample_from, k=spec.ways - 1) + [
+                    always_sample_class_id
+                ]
+            else:
+                class_ids = list(rng.sample(classes, k=spec.ways))
+
+            if class_ids is None:
+                raise ValueError("Failed to sample class IDs for the episode.")
 
             support_idx: List[int] = []
             query_idx: List[int] = []
@@ -335,7 +346,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         seed: int,
         dataset_id: Optional[str] = None,
         max_tries: int = 50,
-        always_sample_class_id=None,
+        always_sample_class_id: Optional[int] = None,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
         spec = self.spec
@@ -350,21 +361,21 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
                 {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
             )
             if len(classes) < spec.ways:
-                if dataset_id is not None:
-                    return None
-                continue
+                raise ValueError(
+                    f"Not enough classes (n={len(classes)}) "
+                    f"to sample the episode {spec} ways from dataset '{ds_id}'"
+                )
 
             if always_sample_class_id is not None:
                 classes_to_sample_from = list(set(classes) - {always_sample_class_id})
-                k = spec.ways - 1
+                class_ids = rng.sample(classes_to_sample_from, k=spec.ways - 1) + [
+                    always_sample_class_id
+                ]
             else:
-                classes_to_sample_from = classes
-                k = spec.ways
+                class_ids = list(rng.sample(classes, k=spec.ways))
 
-            class_ids = rng.sample(classes_to_sample_from, k=k)
-            if always_sample_class_id is not None:
-                if always_sample_class_id not in class_ids:
-                    class_ids[0] = always_sample_class_id
+            if class_ids is None:
+                raise ValueError("Failed to sample class IDs for the episode.")
 
             support_idx: List[int] = []
             query_idx: List[int] = []
@@ -407,6 +418,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         episodes_per_dataset: int,
         seed: int = 0,
         dataset_ids: Optional[Sequence[str]] = None,
+        always_sample_class_id: Optional[int] = None,
     ) -> List[EpisodeRefs]:
         if dataset_ids is None:
             dataset_ids = self.dataset_ids
@@ -415,7 +427,12 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
         for ds in dataset_ids:
             for j in range(int(episodes_per_dataset)):
                 ep_seed = (int(seed) * 10_000) + (hash(ds) % 1_000) * 100 + j
-                ep = self.sample_episode(seed=ep_seed, dataset_id=ds, max_tries=200)
+                ep = self.sample_episode(
+                    seed=ep_seed,
+                    dataset_id=ds,
+                    max_tries=200,
+                    always_sample_class_id=always_sample_class_id,
+                )
                 if ep is None:
                     break
                 bank.append(ep)
@@ -445,6 +462,7 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
         seed: int,
         dataset_id: Optional[str] = None,
         max_tries: int = 50,
+        always_sample_class_id: Optional[int] = None,
     ) -> Optional[EpisodeRefs]:
         rng = random.Random(int(seed))
         spec = self.spec
@@ -458,11 +476,21 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
                 {cid for (ds, cid) in self._pool_indices.keys() if ds == ds_id}
             )
             if len(classes) < spec.ways:
-                if dataset_id is not None:
-                    return None
-                continue
+                raise ValueError(
+                    f"Not enough classes (n={len(classes)}) "
+                    f"to sample the episode {spec} ways from dataset '{ds_id}'"
+                )
 
-            class_ids = rng.sample(classes, k=spec.ways)
+            if always_sample_class_id is not None:
+                classes_to_sample_from = list(set(classes) - {always_sample_class_id})
+                class_ids = rng.sample(classes_to_sample_from, k=spec.ways - 1) + [
+                    always_sample_class_id
+                ]
+            else:
+                class_ids = list(rng.sample(classes, k=spec.ways))
+
+            if class_ids is None:
+                raise ValueError("Failed to sample class IDs for the episode.")
 
             support_idx: List[int] = []
             query_idx: List[int] = []
