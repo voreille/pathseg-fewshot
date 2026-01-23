@@ -186,9 +186,21 @@ df_split.to_csv(
 )
 
 # %%
+df.head()
+# %%
+
+df[(df["dataset_id"] == "bcss") & (df["dataset_class_id"] == 4)]
+
+# %%
 
 episode_spec = EpisodeSpec(ways=5, shots=10, queries=2)
-sampler = MinImagesConsumingEpisodeSampler(df, episode_spec, unique_by="row")
+
+# filter out border tiles to avoid oversampling pixel overlap
+df_filtered = df[~df["is_border_tile"]]
+df_filtered.head()
+# %%
+# %%
+sampler = MinImagesConsumingEpisodeSampler(df_filtered, episode_spec, unique_by="row")
 episode_lists = sampler.build_episode_list(
     episodes_per_dataset=2,
     dataset_ids=["bcss", "ignite"],
@@ -238,6 +250,8 @@ bcss_sample_ids = (
     .unique()
     .tolist()
 )
+# %%
+print(episodes_meta)
 # %%
 ignite_sample_ids = (
     episodes_meta.loc[episodes_meta["dataset_id"] == "ignite", "sample_id"]

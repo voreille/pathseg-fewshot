@@ -188,3 +188,31 @@ Episodic training and evaluation scripts will be added.
 
 TODO
 This section will document how to reproduce the experiments reported in the paper.
+
+## Notes to keep in mind
+### About the background class
+
+I will start with setting every class not sampled as background causes it looks more like the way I want to use the model in the end. 
+I think I also need to make the number of ways vary so the model is not lost at inference.
+
+Maybe consider training for only foreground vs background and then do postprocessing to handle multiple class.
+
+### building tile candidates for selection in episode sampling 
+So the idea is to tile with a fixed grid each image by the input size of the model
+with the CLI pathseg_fewshot/preprocessing/build_indexes.py, and compute for each
+tile the ration of the class present and select tiles based on the area of the classes.
+
+to mitigate the issue arising from fixed grid, namely loose of data augmentation 
+by random crop and handling of border tiles. for the first we add jittering during training and for the second we define the border tile as ending on the end of the image so it lead to some overlap but we assume it is ok for now.
+
+
+there are mainly two types of episode sampler stateless and stateful, used for training and validation respectively.
+
+Currently for validation I chose to sample 2 episodes per datasets with the same
+spec as for training, except that between episode sample_ids are non-overlapping and defined the sample_ids selecteds in these episodes as validation. 
+and I chose the ANORAK dataset as a test set, so not used for training.
+
+Border tiles are defined as ending exactly on the end of the image so it leads to overlap between the border tiles and the one before last tile, so maybe watch out cause for small images the overlapping pixels may be overrepresented.
+To avoid this for the validation I filter out border tiles before sampling episodes.
+
+sample_ids are also non-overlapping also between support and query set for any episodes

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-
+import logging
 import random
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from pathseg_fewshot.datasets.episode import EpisodeRefs, SampleRef, EpisodeSpec
+from pathseg_fewshot.datasets.episode import EpisodeRefs, EpisodeSpec, SampleRef
 
 # -----------------------
 # Helpers
@@ -434,7 +434,10 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase):
                     always_sample_class_id=always_sample_class_id,
                 )
                 if ep is None:
-                    break
+                    raise ValueError(
+                        f"Failed to sample episode {j} for dataset '{ds}'. "
+                        f"Consider reducing episodes_per_dataset or resetting the sampler."
+                    )
                 bank.append(ep)
         return bank
 
@@ -494,7 +497,7 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
 
             support_idx: List[int] = []
             query_idx: List[int] = []
-            ok = True
+            ok = False
 
             for cid in class_ids:
                 base_pool = self._pool_indices.get((ds_id, int(cid)), [])
@@ -509,8 +512,11 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
                     forbidden_sample_ids=set(),
                 )
                 if support_for_class is None:
-                    ok = False
-                    break
+                    logging.info(
+                        f"Failed to pack support tiles for class {cid} in dataset {ds_id}"
+                        f"trying again..."
+                    )
+                    continue
 
                 support_sids = {
                     str(self.df.at[i, "sample_id"]) for i in support_for_class
@@ -530,17 +536,21 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
                     forbidden_sample_ids=set(),
                 )
                 if query_for_class is None:
-                    ok = False
-                    break
+                    logging.info(
+                        f"Failed to pack query tiles for class {cid} in dataset {ds_id}"
+                        f"trying again..."
+                    )
+                    continue
 
+                ok = True
                 support_idx.extend(support_for_class)
                 query_idx.extend(query_for_class)
+
 
             if not ok:
                 if dataset_id is not None:
                     return None
                 continue
-
             # commit used
             self._mark_used_rows(support_idx)
             self._mark_used_rows(query_idx)

@@ -1,26 +1,42 @@
+import logging
+import os
+from pathlib import Path
+
 import pandas as pd
+from dotenv import load_dotenv
 
 from pathseg_fewshot.datasets.episode_sampler import (
-    ConsumingEpisodeSampler,
-    MinImagesConsumingEpisodeSampler,
     EpisodeSpec,
+    MinImagesConsumingEpisodeSampler,
 )
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+data_root = Path(os.getenv("DATA_ROOT", "../data/")).resolve()
 
 
 def main():
     # Load CSV
     df = pd.read_parquet(
-        "/home/valentin/workspaces/pathseg-fewshot/data/index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+        data_root / "index/tile_index_t448_s448/tile_index_t448_s448.parquet"
     )
     AREA_THRESHOLD = 5000  # adjust
     df = df[df["class_area_um2"] >= AREA_THRESHOLD]
     df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
 
-    episode_spec = EpisodeSpec(ways=5, shots=10, queries=2, crop_size=448)
+    episode_spec = EpisodeSpec(ways=5, shots=10, queries=2)
     # sampler = ConsumingEpisodeSampler(df, episode_spec, unique_by="row")
-    sampler = MinImagesConsumingEpisodeSampler(df, episode_spec, unique_by="row")
+    df_filtered = df[~df["is_border_tile"]]
+    sampler = MinImagesConsumingEpisodeSampler(
+        df_filtered, episode_spec, unique_by="row"
+    )
     episode_lists = sampler.build_episode_list(
-        episodes_per_dataset=2, dataset_ids=["bcss", "ignite"]
+        episodes_per_dataset=2,
+        # dataset_ids=["bcss", "ignite"],
+        dataset_ids=["bcss"],
+        always_sample_class_id=0,
     )
 
     episodes_meta = pd.DataFrame(
