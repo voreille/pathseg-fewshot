@@ -175,7 +175,6 @@ df_split.loc[df_split["split"] == "train", "is_query"] = False
 # %%
 df_split.head()
 
-
 # %%
 output_dir = fss_data_root / "splits/scenario_1/"
 output_dir.mkdir(parents=True, exist_ok=True)
@@ -186,25 +185,19 @@ df_split.to_csv(
 )
 
 # %%
-df.head()
-# %%
 
-df[(df["dataset_id"] == "bcss") & (df["dataset_class_id"] == 4)]
-
-# %%
-
-episode_spec = EpisodeSpec(ways=5, shots=10, queries=2)
+episode_spec = EpisodeSpec(ways=[1], shots=1, queries=1)
 
 # filter out border tiles to avoid oversampling pixel overlap
 df_filtered = df[~df["is_border_tile"]]
 df_filtered.head()
 # %%
+df_filtered["dataset_dir"].unique()
 # %%
 sampler = MinImagesConsumingEpisodeSampler(df_filtered, episode_spec, unique_by="row")
 episode_lists = sampler.build_episode_list(
-    episodes_per_dataset=2,
+    episodes_per_dataset=10,
     dataset_ids=["bcss", "ignite"],
-    always_sample_class_id=0,  # ensure background is present
 )
 
 # %%
@@ -290,4 +283,6 @@ loaded_episodes = load_episodes_json(output_dir / "val_episodes.json")
 # %%
 loaded_episodes[0].support[0]
 
+# %%
+output_dir
 # %%

@@ -8,9 +8,10 @@ from typing import List, Optional, Sequence
 
 @dataclass(frozen=True)
 class EpisodeSpec:
-    ways: int  # N
+    ways: list[int]  # N
     shots: int  # K
     queries: int  # Q
+    allow_background: bool = False  # whether class_id=0 can be sampled as a "way"
 
 
 @dataclass(frozen=True)
@@ -20,22 +21,20 @@ class SampleRef:
     image_relpath: str
     mask_relpath: str
     class_id: int
-    # PIL crop box: (left, top, right, bottom). If None, use whole image.
     crop: Optional[tuple[int, int, int, int]] = None
 
 
 @dataclass(frozen=True)
 class EpisodeRefs:
     dataset_id: str
-    class_ids: List[int]  # length N
-    support: List[SampleRef]  # length N*K
-    query: List[SampleRef]  # length N*Q
+    dataset_dir: str
+    class_ids: List[int]
+    support: List[SampleRef]
+    query: List[SampleRef]
 
     def get_sample_ids(self) -> List[str]:
-        ids = [ref.sample_id for ref in self.support] + [
-            ref.sample_id for ref in self.query
-        ]
-        return sorted(set(ids))
+        ids = [ref.sample_id for ref in self.support] + [ref.sample_id for ref in self.query]
+        return list(set(ids))
 
 
 def save_episodes_json(path: Path, episodes: Sequence[EpisodeRefs]) -> None:
@@ -46,6 +45,7 @@ def save_episodes_json(path: Path, episodes: Sequence[EpisodeRefs]) -> None:
     for e in episodes:
         d = {
             "dataset_id": e.dataset_id,
+            "dataset_dir": e.dataset_dir,
             "class_ids": list(map(int, e.class_ids)),
             "support": [],
             "query": [],
@@ -78,8 +78,8 @@ def save_episodes_json(path: Path, episodes: Sequence[EpisodeRefs]) -> None:
         json.dump(payload, f, indent=2)
 
 
-def load_episodes_json(path: Path) -> List[EpisodeRefs]:
-    path = Path(path)
+def load_episodes_json(path: Path | str) -> List[EpisodeRefs]:
+    path = Path(path).resolve()
     with path.open("r") as f:
         data = json.load(f)
 
@@ -110,6 +110,7 @@ def load_episodes_json(path: Path) -> List[EpisodeRefs]:
         episodes.append(
             EpisodeRefs(
                 dataset_id=e["dataset_id"],
+                dataset_dir=e["dataset_dir"],
                 class_ids=list(map(int, e["class_ids"])),
                 support=support,
                 query=query,

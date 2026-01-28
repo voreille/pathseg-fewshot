@@ -10,7 +10,6 @@ class LightningDataModule(lightning.LightningDataModule):
         batch_size: int,
         num_workers: int,
         img_size: tuple[int, int],
-        num_classes: int,
         num_metrics: int,
         ignore_idx: Optional[int] = None,
         pin_memory: bool = True,
@@ -22,7 +21,6 @@ class LightningDataModule(lightning.LightningDataModule):
         self.root = root
         self.ignore_idx = ignore_idx
         self.img_size = img_size
-        self.num_classes = num_classes
         self.num_metrics = num_metrics
 
         self.dataloader_kwargs = {

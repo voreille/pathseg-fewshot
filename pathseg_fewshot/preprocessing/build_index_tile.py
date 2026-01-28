@@ -1,4 +1,3 @@
-# build_tile_index.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -85,7 +84,7 @@ def _load_mask(path: Path) -> np.ndarray:
 @click.option(
     "--write-per-dataset/--no-write-per-dataset", default=True, show_default=True
 )
-@click.option("--concat-global/--no-concat-global", default=False, show_default=True)
+@click.option("--concat-global/--no-concat-global", default=True, show_default=True)
 def main(
     root_dir: Path,
     output_dir: Path,
@@ -195,7 +194,7 @@ def main(
                                 "group": group,
                                 "image_relpath": str(r["image_relpath"]),
                                 "mask_relpath": str(r["mask_relpath"]),
-                                "dataset_dir": str(ds_dir),
+                                "dataset_dir": str(ds_dir.relative_to(root_dir)),
                                 "mpp_x": float(r["mpp_x"]),
                                 "mpp_y": float(r["mpp_y"]),
                                 "magnification": int(r["magnification"]),
