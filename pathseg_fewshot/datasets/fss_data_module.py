@@ -57,6 +57,7 @@ class FSSDataModule(LightningDataModule):
 
         self.root_dir = Path(root).resolve()
         self.tile_index = pd.read_parquet(tile_index_parquet)
+        self.tile_index = self._filter_index(self.tile_index)
 
         if ways is None:
             ways = [1]
@@ -81,6 +82,22 @@ class FSSDataModule(LightningDataModule):
                 img_size=img_size,
                 scale_range=scale_range,
             )
+
+    def _filter_index(self, df):
+        df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
+        if "frac_valid" not in df.columns:
+            print("Computing frac_valid column")
+            df["frac_valid"] = df["valid_pixels"] / (df["w"] * df["h"])
+
+        df = df[df["frac_valid"] >= 0.85]
+
+        AREA_THRESHOLD = 15000  # adjust
+        AREA_THRESHOLD_MAX = 40000
+        df = df[df["class_area_um2"] >= AREA_THRESHOLD]
+        df = df[df["class_area_um2"] <= AREA_THRESHOLD_MAX]
+        return df
+
+
 
     def _check_split_df(self) -> None:
         required_cols = {"sample_id", "dataset_id", "split"}

@@ -267,8 +267,8 @@ class SemanticTransforms(nn.Module):
             antialias=True,
         )(img, target)
 
-        img, target = self.random_horizontal_flip(img, target)
-
         img, target = self.pad(img, target)
+
+        img, target = self.random_horizontal_flip(img, target)
 
         return self.crop(img, target)

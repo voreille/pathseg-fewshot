@@ -119,55 +119,48 @@ class FewShotSegmenter(nn.Module):
                 h_dim=256,
             )
         elif meta_learner_id == "prototype_head":
-            from pathseg_fewshot.models.prototype_head import ProtoTypeHead
+            from pathseg_fewshot.models.prototype_head import (
+                PrototypeHead,
+                PrototypeHeadV2,
+            )
 
-            self.meta_learner = ProtoTypeHead(
+            self.meta_learner = PrototypeHeadV2(
                 embed_dim=self.encoder.embed_dim,
-                proj_dim=256,
+                center=True,
+                learnable_temp=False,
+                normalize=True,
             )
 
         self.grid_size = self.encoder.grid_size  # type: ignore[attr-defined]
         self.patch_size = self.encoder.patch_size  # type: ignore[attr-defined]
         self.ignore_index = ignore_index
 
-    @torch.no_grad()
-    def _flatten_feats(self, feat_s: torch.Tensor) -> torch.Tensor:
+    def _flatten_feats(self, feats: torch.Tensor) -> torch.Tensor:
         """
-        Returns [S*Hp*Wp, F]
+        Accepts:
+        - [B, F, Hp, Wp]
+        - [B, F, Hp*Wp]
+        - [B, Hp*Wp, F]   <-- your case
+
+        Returns:
+        - [B*Hp*Wp, F]
         """
-        S = feat_s.shape[0]
+        B = feats.shape[0]
         Hp, Wp = self.grid_size
 
-        if feat_s.ndim == 4:
-            # [S,F,Hp,Wp] -> [S*Hp*Wp,F]
-            feat_s = feat_s.permute(0, 2, 3, 1).reshape(S * Hp * Wp, -1)
-        elif feat_s.ndim == 3:
-            # [S,F,Hp*Wp] -> [S*Hp*Wp,F]
-            feat_s = feat_s.permute(0, 2, 1).reshape(S * Hp * Wp, -1)
-        else:
-            raise ValueError(f"Unexpected feat_s shape: {feat_s.shape}")
+        if feats.ndim == 4:
+            return feats.permute(0, 2, 3, 1).reshape(B * Hp * Wp, -1)
 
-        return feat_s
+        if feats.ndim == 3:
+            # case A: [B, F, Hp*Wp]
+            if feats.shape[1] == self.encoder.embed_dim and feats.shape[2] == Hp * Wp:
+                return feats.permute(0, 2, 1).reshape(B * Hp * Wp, -1)
 
-    @torch.no_grad()
-    def encode_episode_masks(
-        self,
-        *,
-        support_masks: torch.Tensor,  # [S, H, W] global ids
-        episode_class_ids: torch.Tensor,  # [N] global ids
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-          - support_y: [S, H, W] episode ids (0..N-1) or ignore_index
-          - support_valid: [S, H, W] bool
-        """
-        support_y, support_valid, _ = masks_to_soft_patch_labels(
-            support_masks,
-            num_classes=len(episode_class_ids),
-            patch_size=self.patch_size,
-            ignore_index=self.ignore_index,
-        )
-        return support_y, support_valid
+            # case B: [B, Hp*Wp, F]  (your case)
+            if feats.shape[1] == Hp * Wp:
+                return feats.reshape(B * Hp * Wp, -1)
+
+        raise ValueError(f"Unexpected feats shape: {feats.shape}")
 
     def fit_support(
         self,
@@ -176,7 +169,7 @@ class FewShotSegmenter(nn.Module):
         support_masks: torch.Tensor,  # [S,H,W]
         episode_class_ids: torch.Tensor,  # [N]
     ):
-        feat_s = self.encoder(support_imgs)  # [S,F,Hp,Wp] or [S,F,Hp*Wp]
+        feat_s = self.encoder(support_imgs)  # [S,Hp*Wp,F]
 
         # patch-level soft labels + patch validity
         support_soft, patch_valid, _ = masks_to_soft_patch_labels(
@@ -207,20 +200,124 @@ class FewShotSegmenter(nn.Module):
     def predict_query(
         self,
         *,
-        query_imgs: torch.Tensor,  # [Q, C, H, W]
-        support_ctx: Dict[str, Any],  # output of fit_support(...)
+        query_imgs: torch.Tensor,  # [Q,C,H,W]
+        support_ctx: Dict[str, Any],
+    ) -> torch.Tensor:
+        feat_q = self.encoder(query_imgs)  # [Q, Hp*Wp, F]
+        q_flat = self._flatten_feats(feat_q)  # [Q*Hp*Wp, F]
+
+        logits_flat = self.meta_learner.predict_query(
+            query_feats=q_flat, support_ctx=support_ctx
+        )  # [Q*Hp*Wp, N]
+
+        Q = query_imgs.shape[0]
+        Hp, Wp = self.grid_size
+        N = logits_flat.shape[1]
+
+        return (
+            logits_flat.view(Q, Hp, Wp, N).permute(0, 3, 1, 2).contiguous()
+        )  # [Q,N,Hp,Wp]
+
+    def forward(
+        self,
+        *,
+        support_imgs: torch.Tensor,
+        support_masks: torch.Tensor,
+        query_imgs: torch.Tensor,
+        episode_class_ids: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Returns:
-          - query_logits: [Q, N, Hf, Wf] (or [Q, N, H, W] if your head upsamples)
+        Convenience forward: fit on support, then predict on query.
         """
-        feat_q = self.encoder(query_imgs)  # e.g. [Q, F, Hf, Wf]
-        query_logits = self.meta_learner.predict_query(
-            query_feats=feat_q,
-            support_ctx=support_ctx,
+        support_ctx = self.fit_support(
+            support_imgs=support_imgs,
+            support_masks=support_masks,
+            episode_class_ids=episode_class_ids,
         )
-        query_logits = query_logits.transpose(1, 2)
-        return query_logits.reshape(query_logits.shape[0], -1, *self.grid_size)
+        return self.predict_query(query_imgs=query_imgs, support_ctx=support_ctx)
+
+
+class FewShotSegmenterV2(nn.Module):
+    """
+    Few-shot segmentation model (episode-conditioned).
+
+    Responsibilities:
+      - encode images into feature maps via `encoder`
+      - estimate episode-specific parameters from the support set via `meta_learner.fit(...)`
+      - produce query logits via `meta_learner.predict(...)`
+
+    Expected tensor conventions:
+      - support_imgs: [S, C, H, W]
+      - support_gt:   [S, H, W]  (global ids)
+      - query_imgs:   [Q, C, H, W]
+      - output logits: [Q, N, H', W'] (N = #episode classes; spatial size depends on encoder/head)
+    """
+
+    def __init__(
+        self,
+        *,
+        encoder_id: str = "h0-mini",
+        ignore_index: int = 255,
+        proj_dim: int = 256,
+    ) -> None:
+        super().__init__()
+        self.encoder = Encoder(encoder_id)
+
+        self.grid_size = self.encoder.grid_size  # type: ignore[attr-defined]
+        self.patch_size = self.encoder.patch_size  # type: ignore[attr-defined]
+        self.ignore_index = ignore_index
+        self.proj = nn.Sequential(
+            nn.Linear(self.encoder.embed_dim, proj_dim),
+            nn.ReLU(inplace=True),
+        )
+        from pathseg_fewshot.models.prototype_head import (
+            PrototypeHeadV2,
+        )
+
+        self.meta_learner = PrototypeHeadV2(
+            embed_dim=self.encoder.embed_dim,
+            center=True,
+            learnable_temp=False,
+            normalize=False,
+        )
+
+    def fit_support(
+        self,
+        *,
+        support_imgs: torch.Tensor,  # [S,C,H,W]
+        support_masks: torch.Tensor,  # [S,H,W]
+        episode_class_ids: torch.Tensor,  # [N]
+    ):
+        S, C, H, W = support_imgs.shape
+        feat_s = self.encoder(support_imgs)  # [S,Hp*Wp, F]
+        feat_s = self.proj(feat_s)  # [S,Hp*Wp, proj_dim]
+        # feat_s = F.interpolate(
+
+
+        # patch-level soft labels + patch validity
+
+        return support_ctx
+
+    def predict_query(
+        self,
+        *,
+        query_imgs: torch.Tensor,  # [Q,C,H,W]
+        support_ctx: Dict[str, Any],
+    ) -> torch.Tensor:
+        feat_q = self.encoder(query_imgs)  # [Q, Hp*Wp, F]
+        q_flat = self._flatten_feats(feat_q)  # [Q*Hp*Wp, F]
+
+        logits_flat = self.meta_learner.predict_query(
+            query_feats=q_flat, support_ctx=support_ctx
+        )  # [Q*Hp*Wp, N]
+
+        Q = query_imgs.shape[0]
+        Hp, Wp = self.grid_size
+        N = logits_flat.shape[1]
+
+        return (
+            logits_flat.view(Q, Hp, Wp, N).permute(0, 3, 1, 2).contiguous()
+        )  # [Q,N,Hp,Wp]
 
     def forward(
         self,

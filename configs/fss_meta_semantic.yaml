@@ -32,12 +32,13 @@ data:
 model:
   class_path: pathseg_fewshot.training.metalinear_semantic.MetaLinearSemantic
   init_args:
-    freeze_encoder: False
+    freeze_encoder: True
     num_classes: 2 # TODO: it is only for the metrics, so adapt
     network:
-      class_path: pathseg_fewshot.models.few_shot_segmenter.FewShotSegmenter
+      class_path: pathseg_fewshot.models.few_shot_segmenter.FewShotSegmenterV2
       init_args:
         encoder_id: "h0-mini"
+        meta_learner_id: "prototype_head"
         ignore_index: 255
     tiler:
       class_path: pathseg_fewshot.training.tiler.GridPadTiler
