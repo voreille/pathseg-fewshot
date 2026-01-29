@@ -55,7 +55,7 @@
                 "--output-dir",
                 "${workspaceFolder}/data/index",
                 "--tile-size",
-                "672",
+                "448",
                 "--stride",
                 "448",
                 "--concat-global",

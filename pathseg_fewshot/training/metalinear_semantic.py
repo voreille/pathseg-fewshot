@@ -74,6 +74,7 @@ class MetaLinearSemantic(LightningModule):
         # self._init_class_weights = weights
         # self.criterion = None
 
+        self.init_metrics_semantic(num_classes, ignore_idx, num_metrics)
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.ignore_idx)
         patch_size = self.network.patch_size
         self.label_downsampler = nn.AvgPool2d(patch_size, patch_size)
@@ -150,37 +151,38 @@ class MetaLinearSemantic(LightningModule):
         log_prefix=None,
         is_notebook=False,
     ):
-        (
-            class_ids,
-            support_images,
-            support_masks_global,
-            query_images,
-            query_masks_global,
-        ) = self._episode_to_tensors(batch)
+        for episode in batch:
+            (
+                class_ids,
+                support_images,
+                support_masks_global,
+                query_images,
+                query_masks_global,
+            ) = self._episode_to_tensors(episode)
 
-        logits = self.network.forward(
-            support_imgs=support_images,
-            support_masks=support_masks_global,
-            query_imgs=query_images,
-            episode_class_ids=class_ids,
-        )  # [Q,N,H,W]
+            logits = self.network.forward(
+                support_imgs=support_images,
+                support_masks=support_masks_global,
+                query_imgs=query_images,
+                episode_class_ids=class_ids,
+            )  # [Q,N,H,W]
 
-        logits = F.interpolate(logits, self.img_size, mode="bilinear")
+            logits = F.interpolate(logits, self.img_size, mode="bilinear")
 
-        if is_notebook:
-            return logits
+            if is_notebook:
+                return logits
 
-        # self.metrics[dataloader_idx].update(logits, query_masks_global)
+            # self.metrics[dataloader_idx].update(logits, query_masks_global)
 
-        if batch_idx == 0:
-            name = f"{log_prefix}_{dataloader_idx}_pred_{batch_idx}"
-            plot = self.plot_semantic(
-                query_images[0, ...],
-                query_masks_global[0, ...],
-                logits=logits[0],
-            )
-            # single clean call, no logger assumptions here
-            self.log_wandb_image(name, plot, commit=False)
+            if batch_idx == 0:
+                name = f"{log_prefix}_{dataloader_idx}_pred_{batch_idx}"
+                plot = self.plot_semantic(
+                    query_images[0, ...],
+                    query_masks_global[0, ...],
+                    logits=logits[0],
+                )
+                # single clean call, no logger assumptions here
+                self.log_wandb_image(name, plot, commit=False)
 
     def on_validation_epoch_end(self):
         self._on_eval_epoch_end_semantic("val")

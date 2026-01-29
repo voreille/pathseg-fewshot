@@ -59,6 +59,56 @@ class EpisodeDatasetBase(Dataset):
         self.base_seed = int(base_seed)
         self.ignore_idx = int(ignore_idx)
 
+    def load_img_mask_with_lut_remapping(
+        self,
+        *,
+        ref: SampleRef,
+        data_dir: Path,
+        class_ids: List[int],
+    ) -> Tuple[tv_tensors.Image, tv_tensors.Mask]:
+        """
+        Supposedly faster remapping using LUT instead of per-class masking.
+        TODO: benchmark against previous method.
+        """
+        image = load_image(data_dir / ref.image_relpath)  # uint8 [3,H,W]
+        mask = load_mask(data_dir / ref.mask_relpath)  # long  [H,W]
+
+        # Apply crop early (x1,y1,x2,y2)
+        if ref.crop is not None:
+            x1, y1, x2, y2 = ref.crop
+            image = image[:, y1:y2, x1:x2]
+            mask = mask[y1:y2, x1:x2]
+
+        ignore = self.ignore_idx
+
+        # Build LUT: default -> 0 (background), ignore stays ignore, episode classes -> 1..K
+        # NOTE: this assumes your global class ids are not gigantic. If they are, use a dict remap.
+        max_id = int(max(max(class_ids, default=0), int(mask.max().item())))
+        lut = torch.zeros((max_id + 1,), dtype=torch.long)  # default background = 0
+        lut[:] = 0
+        for new_idx, cid in enumerate(class_ids, start=1):
+            if cid <= max_id:
+                lut[cid] = new_idx
+
+        remapped = torch.empty_like(mask, dtype=torch.long)
+        remapped[:] = 0
+
+        # preserve ignore
+        remapped[mask == ignore] = ignore
+
+        # remap valid ids
+        valid = (mask != ignore) & (mask >= 0) & (mask <= max_id)
+        remapped[valid] = lut[mask[valid]]
+
+        image = tv_tensors.Image(image)
+        remapped = tv_tensors.Mask(remapped)
+
+        if self.transform is not None:
+            image, target = self.transform(image, {"mask": remapped})
+            remapped = target["mask"]
+
+        return image, remapped
+
     def load_img_mask(
         self,
         *,
@@ -69,8 +119,10 @@ class EpisodeDatasetBase(Dataset):
         image = load_image(data_dir / ref.image_relpath)
         mask = load_mask(data_dir / ref.mask_relpath)
 
-        if mask.ndim == 3 and mask.shape[0] == 1:
-            mask = mask.squeeze(0)
+        if ref.crop is not None:
+            x1, y1, x2, y2 = ref.crop
+            image = image[:, y1:y2, x1:x2]
+            mask = mask[y1:y2, x1:x2]
 
         mask = mask.long()
         ignore = int(self.ignore_idx)  # e.g. 255

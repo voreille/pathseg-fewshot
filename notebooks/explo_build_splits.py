@@ -40,6 +40,8 @@ df = df[df["class_area_um2"] >= AREA_THRESHOLD]
 
 
 # %%
+df.head()
+# %%
 df[df["dataset_id"] == "anorak"].to_csv(
     data_root / "explorations/anorak_filtered_tiles.csv",
     index=False,
@@ -281,8 +283,9 @@ save_episodes_json(
 loaded_episodes = load_episodes_json(output_dir / "val_episodes.json")
 
 # %%
-loaded_episodes[0].support[0]
+loaded_episodes[0].dataset_dir
 
 # %%
 output_dir
 # %%
+
