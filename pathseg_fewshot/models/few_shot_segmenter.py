@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from pathseg_fewshot.models.histo_encoder import Encoder
-from pathseg_fewshot.models.meta_linear_head import MetaLinearHeadMC_Attn
 
 
 def masks_to_soft_patch_labels(
@@ -106,15 +105,26 @@ class FewShotSegmenter(nn.Module):
         self,
         *,
         encoder_id: str = "h0-mini",
+        meta_learner_id: str = "meta_linear_head_mc_attn",
         ignore_index: int = 255,
     ) -> None:
         super().__init__()
         self.encoder = Encoder(encoder_id)
 
-        self.meta_learner = MetaLinearHeadMC_Attn(
-            embed_dim=self.encoder.embed_dim,
-            h_dim=256,
-        )
+        if meta_learner_id == "meta_linear_head_mc_attn":
+            from pathseg_fewshot.models.meta_linear_head import MetaLinearHeadMC_Attn
+
+            self.meta_learner = MetaLinearHeadMC_Attn(
+                embed_dim=self.encoder.embed_dim,
+                h_dim=256,
+            )
+        elif meta_learner_id == "prototype_head":
+            from pathseg_fewshot.models.prototype_head import ProtoTypeHead
+
+            self.meta_learner = ProtoTypeHead(
+                embed_dim=self.encoder.embed_dim,
+                proj_dim=256,
+            )
 
         self.grid_size = self.encoder.grid_size  # type: ignore[attr-defined]
         self.patch_size = self.encoder.patch_size  # type: ignore[attr-defined]

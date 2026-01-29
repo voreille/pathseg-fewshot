@@ -1,8 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from pathseg_fewshot.models.histo_encoder import Encoder
 
 
 class AttnPool(nn.Module):
@@ -401,9 +398,8 @@ class MetaLinearHeadMC_Attn(nn.Module):
         support_ctx = {"W": W, "b": b}
         return support_ctx
 
-    @staticmethod
     def predict_query(
-        query_feats: torch.Tensor, support_ctx: dict[str, torch.Tensor]
+        self, query_feats: torch.Tensor, support_ctx: dict[str, torch.Tensor]
     ) -> torch.Tensor:
         # query_feats: (Q,E), W: (C,E), b:(C,) -> logits: (Q,C)
         W = support_ctx["W"]
