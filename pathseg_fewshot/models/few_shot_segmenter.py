@@ -290,7 +290,7 @@ class FewShotSegmenterV2(nn.Module):
     ):
         S, C, H, W = support_imgs.shape
         feat_s = self.encoder(support_imgs)  # [S,Hp*Wp, F]
-        feat_s = self.proj(feat_s)  # [S,Hp*Wp, proj_dim]
+        feat_s = self.proj(feat_s)  # [S,Hp*Wp,proj_dim]
         # feat_s = F.interpolate(
 
 
