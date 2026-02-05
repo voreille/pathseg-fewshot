@@ -120,5 +120,29 @@
             },
             "justMyCode": false
         },
+        {
+            "name": "Python: main.py fit linear",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pathseg_fewshot",
+            "args": [
+                "fit",
+                "-c",
+                "/home/valentin/workspaces/pathseg-fewshot/configs/fss_meta_semantic.yaml",
+                "--runs_dir",
+                "runs/",
+                "--no_compile",
+                "--trainer.logger=false",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "HYDRA_FULL_ERROR": "1"
+            },
+            "justMyCode": false
+        },
+
     ]
 }

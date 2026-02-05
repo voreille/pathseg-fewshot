@@ -21,11 +21,11 @@ workdir = Path("../").resolve()
 data_module = FSSDataModule(
     root=fss_data_root,
     tile_index_parquet=data_root
-    / "index/tile_index_t448_s448/tile_index_t448_s448.parquet",
+    / "index/tile_index_t672_s448/tile_index_t672_s448.parquet",
     split_csv=workdir / "data/fss/splits/scenario_1/split.csv",
     val_episodes_json=workdir / "data/fss/splits/scenario_1/val_episodes.json",
-    ways=[2],
-    shots=1,
+    ways=[1],
+    shots=5,
     queries=1,
     img_size=(448, 448),
     batch_size=1,
@@ -36,11 +36,12 @@ data_module = FSSDataModule(
 data_module.setup("fit")
 # %%
 train_loader = data_module.train_dataloader()
+val_loader = data_module.val_dataloader()
 
 # %%
 episodes = []
 n_show = 5  # change
-for i, batch in enumerate(train_loader):
+for i, batch in enumerate(val_loader):
     episodes.append(batch)
     if i + 1 >= n_show:
         break

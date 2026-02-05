@@ -3,6 +3,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import PolynomialLR
 
 from pathseg_fewshot.training.lightning_module import LightningModule
@@ -115,32 +116,108 @@ class MetaLinearSemantic(LightningModule):
         )
 
     def training_step(self, batch, batch_idx):
-        loss_total = torch.tensor(0.0, device=self.device)
+        # batch is a list of episodes (your current assumption)
+        device = self.device
+        loss_total = torch.tensor(0.0, device=device)
+
+        # --- 1) collect all images for one encoder forward
+        all_imgs = []
+        episode_specs = []  # to slice back later
+
         for episode in batch:
             (
                 class_ids,
-                support_images,
-                support_masks_global,
-                query_images,
-                query_masks_global,
+                support_imgs,
+                support_masks,
+                query_imgs,
+                query_masks,
             ) = self._episode_to_tensors(episode)
 
-            logits = self.network.forward(
-                support_imgs=support_images,
-                support_masks=support_masks_global,
-                query_imgs=query_images,
-                episode_class_ids=class_ids,
-            )  # [Q,N,H,W]
+            S = support_imgs.shape[0]
+            Q = query_imgs.shape[0]
 
+            start = len(all_imgs)
+            all_imgs.extend([support_imgs, query_imgs])
+
+            episode_specs.append(
+                dict(
+                    class_ids=class_ids,  # [K]
+                    support_masks=support_masks,  # [S,H,W]
+                    query_masks=query_masks,  # [Q,H,W]
+                    S=S,
+                    Q=Q,
+                    start=start,  # start index in "all_imgs blocks"
+                )
+            )
+
+        imgs_cat = torch.cat(all_imgs, dim=0)  # because each element is already a batch
+        feats_cat = self.network.encode(imgs_cat)  # [B,T,Fp]  (FewShotSegmenter.encode)
+
+        # Now slice per episode: because we concatenated support then query as blocks,
+        # we need to track feature offsets in "image count" space, not list indices.
+        # Easier: rebuild offsets by accumulating image counts:
+        offset = 0
+        for spec in episode_specs:
+            S, Q = spec["S"], spec["Q"]
+            support_feats = feats_cat[offset : offset + S]  # [S,T,Fp]
+            query_feats = feats_cat[offset + S : offset + S + Q]  # [Q,T,Fp]
+            offset += S + Q
+
+            class_ids = spec["class_ids"]
+            support_masks = spec["support_masks"]  # [S,H,W]
+            query_masks = spec["query_masks"]  # [Q,H,W]
+
+            # --- 3) build token-level support labels & valid mask (on token grid)
+            K = int(class_ids.numel())  # fg ways
+            support_labels_tok, support_valid_tok = self.network.encode_support_labels(
+                support_masks=support_masks,
+                num_fg_classes=K,
+            )  # [S,T,K+1], [S,T]
+
+            # --- 4) run episode head on features
+            # logits_flat = self.network.forward_features(
+            #     support_features=support_feats,  # [S,T,Fp]
+            #     support_labels=support_labels_tok,  # [S,T,C]
+            #     query_features=query_feats,  # [Q,T,Fp]
+            #     support_valid=support_valid_tok,  # [S,T]
+            # )  # [Q*T, C] where C=K+1
+            ctx = self.network.fit_support_features(
+                support_features=support_feats,
+                support_labels=support_labels_tok,
+                support_valid=support_valid_tok,
+            )
+            logits_flat = self.network.predict_query_features(
+                query_features=query_feats,
+                support_ctx=ctx,
+            )
+
+            # reshape to token grid [Q,C,Hp,Wp]
+            logits = self.network.unflatten_logits(logits_flat, num_query=Q)
             logits = F.interpolate(logits, self.img_size, mode="bilinear")
+            pred_masks = logits.argmax(dim=1)  # [Q,H,W]
 
-            # targets = self.to_per_pixel_targets_semantic(query_masks_global, self.ignore_idx)
-            # target = torch.stack(query_masks_global).long()
+            pred_labels_tok, pred_valid_tok = self.network.encode_support_labels(
+                support_masks=pred_masks,
+                num_fg_classes=K,
+            )  # [S,T,K+1], [S,T]
+            logits_par = self.network.forward_features(
+                support_features=query_feats,  # [S,T,Fp]
+                support_labels=pred_labels_tok,  # [S,T,C]
+                query_features=support_feats,  # [Q,T,Fp]
+                support_valid=pred_valid_tok,  # [S,T]
+            )  # [Q*T, C] where C=K+1
+            # CE expects [Q,C,Hp,Wp] vs [Q,Hp,Wp]
 
-            loss_total += self.criterion(logits, query_masks_global)
-        loss_total /= len(batch)
+            logits_par = self.network.unflatten_logits(logits_par, num_query=S)
+            logits_par = F.interpolate(logits_par, self.img_size, mode="bilinear")
+
+            loss_total += self.criterion(logits, query_masks)
+            loss_total += self.criterion(logits_par, support_masks)
+            loss_total += 1e-3 * ctx.get("aux_bank_div", 0.0)
+            loss_total += 1e-3 * ctx.get("aux_bank_usage", 0.0)
+
+        loss_total = loss_total / len(batch)
         self.log("train_loss_total", loss_total, sync_dist=True, prog_bar=True)
-
         return loss_total
 
     def eval_step(
@@ -151,6 +228,8 @@ class MetaLinearSemantic(LightningModule):
         log_prefix=None,
         is_notebook=False,
     ):
+        logits_list = []
+        query_masks_list = []
         for episode in batch:
             (
                 class_ids,
@@ -160,6 +239,7 @@ class MetaLinearSemantic(LightningModule):
                 query_masks_global,
             ) = self._episode_to_tensors(episode)
 
+            Q = query_images.shape[0]
             logits = self.network.forward(
                 support_imgs=support_images,
                 support_masks=support_masks_global,
@@ -168,11 +248,11 @@ class MetaLinearSemantic(LightningModule):
             )  # [Q,N,H,W]
 
             logits = F.interpolate(logits, self.img_size, mode="bilinear")
+            logits_list.extend(logits[i, ...] for i in range(Q))
+            query_masks_list.extend([query_masks_global[i, ...] for i in range(Q)])
 
             if is_notebook:
                 return logits
-
-            # self.metrics[dataloader_idx].update(logits, query_masks_global)
 
             if batch_idx == 0:
                 name = f"{log_prefix}_{dataloader_idx}_pred_{batch_idx}"
@@ -184,11 +264,75 @@ class MetaLinearSemantic(LightningModule):
                 # single clean call, no logger assumptions here
                 self.log_wandb_image(name, plot, commit=False)
 
+        self.update_metrics(logits_list, query_masks_list, dataloader_idx)
+
     def on_validation_epoch_end(self):
         self._on_eval_epoch_end_semantic("val")
 
+    # def configure_optimizers(self):
+    #     optimizer = super().configure_optimizers()
+
+    #     lr_scheduler = {
+    #         "scheduler": PolynomialLR(
+    #             optimizer,
+    #             int(self.trainer.estimated_stepping_batches),
+    #             self.poly_lr_decay_power,
+    #         ),
+    #         "interval": "step",
+    #     }
+
+    #     return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
     def configure_optimizers(self):
-        optimizer = super().configure_optimizers()
+        # --- collect encoder params (if present)
+        enc_params = (
+            list(self.network.encoder.parameters())
+            if hasattr(self.network, "encoder")
+            else []
+        )
+        enc_ids = {id(p) for p in enc_params}
+
+        # --- split params into decay / no_decay for base + encoder
+        base_decay, base_no_decay = [], []
+        enc_decay, enc_no_decay = [], []
+
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+
+            is_encoder = id(p) in enc_ids
+            is_no_decay = (
+                name.endswith(".bias")
+                or "norm" in name.lower()
+                or "layernorm" in name.lower()
+            )
+
+            if is_encoder:
+                (enc_no_decay if is_no_decay else enc_decay).append(p)
+            else:
+                (base_no_decay if is_no_decay else base_decay).append(p)
+
+        optimizer = AdamW(
+            [
+                {
+                    "params": base_decay,
+                    "lr": self.lr,
+                    "weight_decay": self.weight_decay,
+                },
+                {"params": base_no_decay, "lr": self.lr, "weight_decay": 0.0},
+                {
+                    "params": enc_decay,
+                    "lr": self.lr * self.lr_multiplier_encoder,
+                    "weight_decay": self.weight_decay,
+                },
+                {
+                    "params": enc_no_decay,
+                    "lr": self.lr * self.lr_multiplier_encoder,
+                    "weight_decay": 0.0,
+                },
+            ],
+            betas=(0.9, 0.95),  # good default for transformer-ish heads
+        )
 
         lr_scheduler = {
             "scheduler": PolynomialLR(
@@ -198,5 +342,4 @@ class MetaLinearSemantic(LightningModule):
             ),
             "interval": "step",
         }
-
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}

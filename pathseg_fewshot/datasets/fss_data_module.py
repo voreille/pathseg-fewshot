@@ -91,8 +91,8 @@ class FSSDataModule(LightningDataModule):
 
         df = df[df["frac_valid"] >= 0.85]
 
-        AREA_THRESHOLD = 15000  # adjust
-        AREA_THRESHOLD_MAX = 40000
+        AREA_THRESHOLD = 45000  # adjust
+        AREA_THRESHOLD_MAX = 68000
         df = df[df["class_area_um2"] >= AREA_THRESHOLD]
         df = df[df["class_area_um2"] <= AREA_THRESHOLD_MAX]
         return df
@@ -124,7 +124,7 @@ class FSSDataModule(LightningDataModule):
                     self.split_df["sample_id"].isin(val_sample_ids), "split"
                 ] = "val"
 
-            elif val_sample_ids != df_val_ids:
+            elif not val_sample_ids.issubset(df_val_ids):
                 raise ValueError(
                     f"Mismatch between val sample_ids in split_df and val_episodes_json. "
                     f"split_df has {len(df_val_ids)} ids, val_episodes_json has {len(val_sample_ids)} ids."

@@ -41,7 +41,9 @@ def _build_crop_from_row(r: pd.Series) -> Optional[tuple[int, int, int, int]]:
     return (x, y, x + w, y + h)
 
 
-def _build_pools(df: pd.DataFrame) -> Tuple[List[str], Dict[Tuple[str, int], List[int]]]:
+def _build_pools(
+    df: pd.DataFrame,
+) -> Tuple[List[str], Dict[Tuple[str, int], List[int]]]:
     """(dataset_id, class_id) -> list of row indices, plus sorted dataset_ids."""
     dataset_ids = sorted(df["dataset_id"].astype(str).unique().tolist())
 
@@ -159,6 +161,7 @@ def _rows_to_episode(
 # Shared sampling logic
 # -----------------------
 
+
 @dataclass(frozen=True)
 class _EpisodePlan:
     ds_id: str
@@ -239,9 +242,15 @@ class _EpisodeSamplerCommon:
         spec = self.spec
         ways = int(rng.choice(spec.ways))
 
-        ds_id = str(dataset_id) if dataset_id is not None else rng.choice(self.dataset_ids)
+        ds_id = (
+            str(dataset_id) if dataset_id is not None else rng.choice(self.dataset_ids)
+        )
 
-        allow_bg = spec.allow_background if allow_background is None else bool(allow_background)
+        allow_bg = (
+            spec.allow_background
+            if allow_background is None
+            else bool(allow_background)
+        )
         classes = self._available_classes(ds_id, allow_background=allow_bg)
 
         if len(classes) < ways:
@@ -251,12 +260,16 @@ class _EpisodeSamplerCommon:
             )
 
         class_ids = rng.sample(classes, k=ways)
-        return _EpisodePlan(ds_id=ds_id, class_ids=[int(x) for x in class_ids], ways=ways)
+        class_ids.sort()
+        return _EpisodePlan(
+            ds_id=ds_id, class_ids=[int(x) for x in class_ids], ways=ways
+        )
 
 
 # -----------------------
 # Stateless sampler (train)
 # -----------------------
+
 
 class StatelessEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
     """
@@ -308,7 +321,7 @@ class StatelessEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
                     ok = False
                     break
                 support_idx.extend(chosen[: spec.shots])
-                query_idx.extend(chosen[spec.shots:])
+                query_idx.extend(chosen[spec.shots :])
 
             if not ok:
                 continue
@@ -327,6 +340,7 @@ class StatelessEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
 # -----------------------
 # Consuming sampler (build banks)
 # -----------------------
+
 
 class ConsumingEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
     """
@@ -359,7 +373,9 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
         self.unique_by = unique_by
 
         self.dataset_ids, self._pool_indices = _build_pools(self.df)
-        self._rows_by_sample = _build_rows_by_sample(self.df) if unique_by == "sample" else {}
+        self._rows_by_sample = (
+            _build_rows_by_sample(self.df) if unique_by == "sample" else {}
+        )
         self._used_rows: set[int] = set()
 
     def reset_used(self) -> None:
@@ -410,7 +426,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
                     break
 
                 support_idx.extend(chosen[: spec.shots])
-                query_idx.extend(chosen[spec.shots:])
+                query_idx.extend(chosen[spec.shots :])
 
             if not ok:
                 continue
@@ -444,12 +460,18 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
         for ds in dataset_ids:
             for j in range(int(episodes_per_dataset)):
                 ep_seed = (int(seed) * 10_000) + (hash(ds) % 1_000) * 100 + j
-                ep = self.sample_episode(
-                    seed=ep_seed,
-                    dataset_id=str(ds),
-                    max_tries=int(max_tries_per_episode),
-                    allow_background=allow_background,
-                )
+                try:
+                    ep = self.sample_episode(
+                        seed=ep_seed,
+                        dataset_id=str(ds),
+                        max_tries=int(max_tries_per_episode),
+                        allow_background=allow_background,
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"Failed to sample episode {j} for dataset {ds}: %s", e
+                    )
+                    continue
                 bank.append(ep)
         return bank
 
@@ -457,6 +479,7 @@ class ConsumingEpisodeSampler(EpisodeSamplerBase, _EpisodeSamplerCommon):
 # -----------------------
 # Min-images consuming sampler (packs tiles into few images)
 # -----------------------
+
 
 class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
     """
@@ -513,11 +536,15 @@ class MinImagesConsumingEpisodeSampler(ConsumingEpisodeSampler):
                     ok_all_classes = False
                     break
 
-                support_sids = {str(self.df.at[i, "sample_id"]) for i in support_for_class}
+                support_sids = {
+                    str(self.df.at[i, "sample_id"]) for i in support_for_class
+                }
 
                 # 2) pick query from different images than support (pack as well)
                 remaining = [
-                    i for i in avail if str(self.df.at[i, "sample_id"]) not in support_sids
+                    i
+                    for i in avail
+                    if str(self.df.at[i, "sample_id"]) not in support_sids
                 ]
                 query_for_class = _greedy_pack_tiles(
                     rng=rng,
