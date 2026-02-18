@@ -1,4 +1,5 @@
 # %%
+import itertools
 import os
 from pathlib import Path
 
@@ -24,8 +25,11 @@ fss_data_root = Path(os.getenv("FSS_DATA_ROOT", "../data/fss")).resolve()
 # %%
 # Load CSV
 df = pd.read_parquet(
-    data_root / "index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+    data_root / "index/tile_index_t896_s896/tile_index_t896_s896.parquet"
 )
+# df = pd.read_parquet(
+#     data_root / "index/tile_index_t448_s448/tile_index_t448_s448.parquet"
+# )
 # %%
 # Filter small areas
 df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
@@ -84,7 +88,7 @@ plt.show()
 
 
 # %%
-output_dir = fss_data_root / "splits/scenario_3/"
+output_dir = fss_data_root / "splits/scenario_anorak_2ways_ts896/"
 output_dir.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {output_dir}")
 
@@ -119,7 +123,13 @@ df_split.to_csv(
 
 
 # %%
-def filter_index(input_df, area_threshold=20000, area_threshold_max=30000, min_img_size=448):
+df.head()
+
+
+# %%
+def filter_index(
+    input_df, area_threshold=0.3, area_threshold_max=0.7, min_img_size=448
+):
     df = input_df.copy()
     df = df[(df["image_width"] >= min_img_size) & (df["image_height"] >= min_img_size)]
     df["class_area_px"] = df["class_area_um2"] / (df["mpp_x"] * df["mpp_y"])
@@ -129,17 +139,61 @@ def filter_index(input_df, area_threshold=20000, area_threshold_max=30000, min_i
 
     df = df[df["frac_valid"] >= 0.85]
 
-    df = df[df["class_area_um2"] >= area_threshold]
-    df = df[df["class_area_um2"] <= area_threshold_max]
+    df = df[df["class_frac_valid"] >= area_threshold]
+    df = df[df["class_frac_valid"] <= area_threshold_max]
     return df
 
 
 df_filtered = df[~df["is_border_tile"]]
-df_filtered = filter_index(df_filtered, area_threshold=20000, area_threshold_max=30000)
+df_filtered = filter_index(
+    df_filtered, area_threshold=0.25, area_threshold_max=0.75, min_img_size=896
+)
 df_filtered.head()
+df_anorak = df_filtered[df_filtered["dataset_id"] == "anorak"]
 
 # %%
-episode_spec = EpisodeSpec(ways=[6], shots=1, queries=1)
+df_anorak["dataset_class_id"].value_counts()
+# %%
+n_ways = 2
+n_classes = df_anorak["dataset_class_id"].nunique()
+n_episodes_per_pair = 50
+n_shots = 1
+n_queries = 1
+
+
+for pair in itertools.combinations(range(1, n_classes + 1), n_ways):
+    episode_list = []
+    for i in range(n_episodes_per_pair):
+        tiles_support = pd.DataFrame()
+        tiles_query = pd.DataFrame()
+        for p in pair:
+            tiles_support = pd.concat(
+                [
+                    tiles_support,
+                    df_anorak[df_anorak["dataset_class_id"] == p].sample(
+                        n=n_shots, replace=False
+                    ),
+                ]
+            )
+        used_sample_ids = tiles_support["sample_id"].unique()
+        for p in pair:
+            for n_q in range(n_queries):
+                tiles_query = pd.concat(
+                    [
+                        tiles_query,
+                        df_anorak[
+                            (df_anorak["dataset_class_id"] == p)
+                            & (~df_anorak["sample_id"].isin(used_sample_ids))
+                        ].sample(n=1, replace=False),
+                    ]
+                )
+                used_sample_ids = np.concatenate(
+                    [used_sample_ids, tiles_query["sample_id"].unique()]
+                )
+        episode_list.append((tiles_support, tiles_query))
+
+# %%
+episode_spec = EpisodeSpec(ways=[2], shots=1, queries=1)
 
 
 # %%
@@ -147,7 +201,7 @@ df_filtered["dataset_dir"].unique()
 # %%
 sampler = MinImagesConsumingEpisodeSampler(df_filtered, episode_spec, unique_by="row")
 episode_lists = sampler.build_episode_list(
-    episodes_per_dataset=9,
+    episodes_per_dataset=10,
     dataset_ids=["anorak"],
 )
 

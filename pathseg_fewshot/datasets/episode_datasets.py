@@ -160,6 +160,7 @@ class EpisodeDatasetBase(Dataset):
         query_x, query_y = [], []
         data_dir = self.root_dir / episode.dataset_dir
         class_ids = episode.class_ids
+        class_ids.sort()  # sort in ascending order for consistent remapping to 1..
 
         for ref in episode.support:
             img, target = self.load_img_mask(

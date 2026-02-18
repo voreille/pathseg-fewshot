@@ -20,14 +20,13 @@ workdir = Path("../").resolve()
 # %%
 data_module = FSSDataModule(
     root=fss_data_root,
-    tile_index_parquet=data_root
-    / "index/tile_index_t672_s448/tile_index_t672_s448.parquet",
-    split_csv=workdir / "data/fss/splits/scenario_1/split.csv",
-    val_episodes_json=workdir / "data/fss/splits/scenario_1/val_episodes.json",
-    ways=[1],
-    shots=5,
+    tile_index_parquet=workdir / "data/fss/splits/scenario_anorak_1/tile_index_train.parquet",
+    split_csv=workdir / "data/fss/splits/scenario_anorak_1/split.csv",
+    val_episodes_json=workdir / "data/fss/splits/scenario_anorak_1/val_episodes.json",
+    ways=[2],
+    shots=1,
     queries=1,
-    img_size=(448, 448),
+    img_size=(896, 896),
     batch_size=1,
     num_workers=4,
     episodes_per_epoch=1000,
@@ -36,7 +35,9 @@ data_module = FSSDataModule(
 data_module.setup("fit")
 # %%
 train_loader = data_module.train_dataloader()
-val_loader = data_module.val_dataloader()
+val_loaders = data_module.val_dataloader()
+val_loader = val_loaders[0]
+val_loader = train_loader
 
 # %%
 episodes = []

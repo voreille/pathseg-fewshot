@@ -1,3 +1,4 @@
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Union
 
@@ -6,12 +7,12 @@ from lightning.pytorch.utilities import rank_zero_info
 from torch import nn
 from torch.utils.data import DataLoader
 
+from pathseg_fewshot.datasets.episode import EpisodeSpec, load_episodes_json
 from pathseg_fewshot.datasets.episode_datasets import (
-    OnTheFlyEpisodeDataset,
     EpisodeListDataset,
+    OnTheFlyEpisodeDataset,
 )
 from pathseg_fewshot.datasets.episode_sampler import StatelessEpisodeSampler
-from pathseg_fewshot.datasets.episode import load_episodes_json, EpisodeSpec
 from pathseg_fewshot.datasets.lightning_data_module import LightningDataModule
 from pathseg_fewshot.datasets.transforms import (
     SemanticTransforms,
@@ -37,6 +38,9 @@ class FSSDataModule(LightningDataModule):
         prefetch_factor: int = 2,
         transform: Optional[nn.Module] = None,
         episodes_per_epoch: int = 1000,
+        min_valid_frac: float = 0.85,
+        min_class_ratio: float = 0.25,
+        max_class_ratio: float = 0.75,
     ) -> None:
         super().__init__(
             root=root,
@@ -56,6 +60,11 @@ class FSSDataModule(LightningDataModule):
         self._check_split_df()
 
         self.root_dir = Path(root).resolve()
+
+        self.min_valid_frac = min_valid_frac
+        self.min_class_ratio = min_class_ratio
+        self.max_class_ratio = max_class_ratio
+
         self.tile_index = pd.read_parquet(tile_index_parquet)
         self.tile_index = self._filter_index(self.tile_index)
 
@@ -89,15 +98,11 @@ class FSSDataModule(LightningDataModule):
             print("Computing frac_valid column")
             df["frac_valid"] = df["valid_pixels"] / (df["w"] * df["h"])
 
-        df = df[df["frac_valid"] >= 0.85]
+        df = df[df["frac_valid"] >= self.min_valid_frac]
 
-        AREA_THRESHOLD = 45000  # adjust
-        AREA_THRESHOLD_MAX = 68000
-        df = df[df["class_area_um2"] >= AREA_THRESHOLD]
-        df = df[df["class_area_um2"] <= AREA_THRESHOLD_MAX]
+        df = df[df["class_frac_valid"] >= self.min_class_ratio]
+        df = df[df["class_frac_valid"] <= self.max_class_ratio]
         return df
-
-
 
     def _check_split_df(self) -> None:
         required_cols = {"sample_id", "dataset_id", "split"}
@@ -154,11 +159,16 @@ class FSSDataModule(LightningDataModule):
                 episodes_per_epoch=self.episodes_per_epoch,
                 transform=self.transform,
             )
-            self.val_dataset = EpisodeListDataset(
-                self.root_dir,
-                episodes=self.val_episodes_list,
-            )
+            episodes_by_pair = defaultdict(list)
+            for ep in self.val_episodes_list:
+                key = tuple(sorted(ep.class_ids))  # e.g. (2, 5)
+                episodes_by_pair[key].append(ep)
 
+            self.val_pairs = sorted(episodes_by_pair.keys())
+            self.val_datasets = [
+                EpisodeListDataset(self.root_dir, episodes=episodes_by_pair[pair])
+                for pair in self.val_pairs
+            ]
         return self
 
     def train_dataloader(self):
@@ -171,11 +181,10 @@ class FSSDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            collate_fn=lambda x: x,
-            **self.dataloader_kwargs,
-        )
+        return [
+            DataLoader(ds, collate_fn=lambda x: x, **self.dataloader_kwargs)
+            for ds in self.val_datasets
+        ]
 
     # def test_dataloader(self):
     #     return DataLoader(

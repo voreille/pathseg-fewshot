@@ -1,0 +1,49 @@
+trainer:
+  precision: "16-mixed" # or "bf16-mixed" for uni2 or 16-mixed for h-optimus
+  max_steps: 40000
+  check_val_every_n_epoch: null
+  val_check_interval: 100  # to change if accumulate_grad_batches > 1
+  accumulate_grad_batches: 1
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: ./tb_logs
+      name: fewshot-benchmark
+      version: test
+data:
+  class_path: pathseg_fewshot.datasets.fss_data_module.FSSDataModule
+  init_args:
+    root: /home/valentin/workspaces/pathseg-fewshot/data/fss
+    tile_index_parquet: /home/valentin/workspaces/pathseg-fewshot/data/index/tile_index_t896_s896/tile_index_t896_s896.parquet
+    split_csv: /home/valentin/workspaces/pathseg-fewshot/data/fss/splits/scenario_anorak_2ways_ts896_total/split.csv
+    val_episodes_json: /home/valentin/workspaces/pathseg-fewshot/data/fss/splits/scenario_anorak_2ways_ts896_total/val_episodes.json
+    img_size: [896, 896]
+    prefetch_factor: 4
+    num_workers: 0
+    batch_size: 4
+    episodes_per_epoch: 10000
+    ways:
+      - 2
+    shots: 1
+    queries: 1
+model:
+  class_path: pathseg_fewshot.training.metalinear_semantic.MetaLinearSemantic
+  init_args:
+    freeze_encoder: True
+    num_classes: 3 # ways + background
+    lr_multiplier_encoder: 0.01
+    network:
+      class_path: pathseg_fewshot.models.few_shot_segmenter.FewShotSegmenter
+      init_args:
+        encoder_id: "h0-mini"
+        ignore_index: 255
+        meta_learner_id: "prototype_head" # "area_gated_logit_head" 
+        center_features: true
+    tiler:
+      class_path: pathseg_fewshot.training.tiler.GridPadTiler
+      init_args:
+        tile: 896
+        stride: 448
+        weighted_blend: true # or true
+        pad_mode: "replicate" # optional; nice for images
+        pad_value: 0.0

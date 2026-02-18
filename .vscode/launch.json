@@ -55,9 +55,9 @@
                 "--output-dir",
                 "${workspaceFolder}/data/index",
                 "--tile-size",
-                "448",
+                "896",
                 "--stride",
-                "448",
+                "896",
                 "--concat-global",
             ],
             "console": "integratedTerminal",
@@ -91,6 +91,23 @@
                 "/mnt/nas7/data/Personal/Valentin/ANORAK_not_resized",
                 "--output-dir",
                 "/home/valentin/data/fss/anorak",
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+            },
+        },
+        {
+            "name": "Python Debugger: Prepare PANDA",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/pathseg_fewshot/preprocessing/panda/prepare.py",
+            "args": [
+                "--raw-data-dir",
+                "/mnt/nas7/data/Personal/Valentin/PANDA/data",
+                "--output-dir",
+                "/home/valentin/data/fss/panda",
+                "--save-overview",
             ],
             "console": "integratedTerminal",
             "env": {
@@ -143,6 +160,5 @@
             },
             "justMyCode": false
         },
-
     ]
 }

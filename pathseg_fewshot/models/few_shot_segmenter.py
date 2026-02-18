@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple, Literal
+from typing import Any, Dict, Optional, Tuple, Literal
 
 import torch
 import torch.nn as nn
@@ -154,12 +154,38 @@ class LinearProj(nn.Module):
 
 
 def build_meta_learner(
-    meta_learner_id: str, input_dim: int, center=False
+    meta_learner_id: str,
+    input_dim: int,
+    **kwargs,
 ) -> MetaLearnerBase:
     if meta_learner_id == "prototype_head":
         from pathseg_fewshot.models.metalearner import PrototypeHead
 
-        return PrototypeHead(embed_dim=input_dim, center=center)
+        return PrototypeHead(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+    elif meta_learner_id == "prototype_head_k_means":
+        from pathseg_fewshot.models.metalearner import PrototypeHeadKMeans
+
+        return PrototypeHeadKMeans(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+    elif meta_learner_id == "prototype_head_k_means_improved":
+        from pathseg_fewshot.models.metalearner import PrototypeHeadKMeansImproved
+
+        return PrototypeHeadKMeansImproved(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+    elif meta_learner_id == "prototype_head_k_means_softmax":
+        from pathseg_fewshot.models.metalearner import PrototypeHeadKMeansSoftmax
+
+        return PrototypeHeadKMeansSoftmax(
+            embed_dim=input_dim,
+            **kwargs,
+        )
     elif meta_learner_id == "prototype_mixture_bank_head":
         from pathseg_fewshot.models.prototype_mixture_head import (
             PrototypeMixtureBankHead,
@@ -167,7 +193,6 @@ def build_meta_learner(
 
         return PrototypeMixtureBankHead(
             embed_dim=input_dim,
-            center=center,
             bank_size=256,
             presence_beta=20.0,
             add_diversity_loss=True,
@@ -180,8 +205,47 @@ def build_meta_learner(
 
         return GaussianMixtureBankHead(
             embed_dim=input_dim,
-            center=center,
             bank_size=32,
+        )
+    elif meta_learner_id == "area_gated_prototype_head":
+        from pathseg_fewshot.models.prototype_mixture_head import AreaGatedBankMaskHead
+
+        return AreaGatedBankMaskHead(
+            embed_dim=input_dim,
+            bank_size=256,
+            add_diversity_loss=True,
+        )
+    elif meta_learner_id == "area_gated_logit_head":
+        from pathseg_fewshot.models.prototype_mixture_head import AreaGatedBankLogitHead
+
+        return AreaGatedBankLogitHead(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+
+    elif meta_learner_id == "area_gated_logit_head_improved":
+        from pathseg_fewshot.models.prototype_mixture_head import (
+            AreaGatedBankLogitHeadImproved,
+        )
+
+        return AreaGatedBankLogitHeadImproved(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+    elif meta_learner_id == "meta_linear_head_attn":
+        from pathseg_fewshot.models.prototype_mixture_head import MetaLinearHeadMC_Attn
+
+        return MetaLinearHeadMC_Attn(
+            embed_dim=input_dim,
+            **kwargs,
+        )
+    elif meta_learner_id == "area_gated_logit_head_film":
+        from pathseg_fewshot.models.prototype_mixture_head import (
+            AreaGatedBankLogitHeadFiLM,
+        )
+        return AreaGatedBankLogitHeadFiLM(
+            embed_dim=input_dim,
+            **kwargs,
         )
 
     else:
@@ -198,20 +262,27 @@ class FewShotSegmenter(nn.Module):
     Label encoding (soft/hard) is handled here.
     """
 
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> FewShotSegmenter:
+        init_args = config.get("init_args", {})
+        return cls(**init_args)
+
     def __init__(
         self,
         *,
         encoder_id: str = "h0-mini",
+        img_size: Tuple[int, int] = (896, 896),
         ignore_index: int = 255,
-        proj_dim: Optional[int] = 256,
+        # proj_dim: Optional[int] = None,
+        proj_dim: Optional[int] = 512,
         proj_layernorm: bool = True,
         proj_activation: Optional[Literal["gelu", "relu"]] = "gelu",
         label_mode: LabelMode = "soft_avgpool",
         meta_learner_id: str = "prototype_head",
-        center_features: bool = False,
+        meta_learner_kwargs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
-        self.encoder = Encoder(encoder_id)
+        self.encoder = Encoder(encoder_id, img_size=img_size)
         self.grid_size: Tuple[int, int] = self.encoder.grid_size  # (Hp,Wp)
         self.patch_size: Tuple[int, int] = self.encoder.patch_size
         self.ignore_index = int(ignore_index)
@@ -239,7 +310,7 @@ class FewShotSegmenter(nn.Module):
         self.meta = build_meta_learner(
             meta_learner_id,
             input_dim=proj_out,
-            center=center_features,
+            **(meta_learner_kwargs or {}),
         )
         # self.meta = PromptMetaLearnerWithMaxC(d_model=in_dim, max_classes=5)
 

@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import wandb
 from matplotlib.lines import Line2D
 from PIL import Image
 from torch.nn.functional import interpolate
@@ -64,6 +63,7 @@ class LightningModule(lightning.LightningModule):
                 for _ in range(num_metrics)
             ]
         )
+        self.metrics.to(self.device)
 
     @torch.compiler.disable
     def update_metrics(
@@ -359,7 +359,49 @@ class LightningModule(lightning.LightningModule):
 
         return None
 
-    def log_wandb_image(self, name: str, image, commit: bool = False):
-        exp = self.get_wandb_experiment()
-        if exp is not None:
-            exp.log({name: [wandb.Image(image)]}, commit=commit)
+    # def log_wandb_image(self, name: str, image, commit: bool = False):
+    #     exp = self.get_wandb_experiment()
+    #     if exp is not None:
+    #         exp.log({name: [wandb.Image(image)]}, commit=commit)
+
+    def get_tb_writer(self):
+        trainer = getattr(self, "trainer", None)
+        if trainer is None:
+            return None
+
+        logger = getattr(trainer, "logger", None)
+        exp = getattr(logger, "experiment", None)
+        # TensorBoard SummaryWriter has add_image
+        if exp is not None and hasattr(exp, "add_image"):
+            return exp
+        return None
+
+    def log_tb_image(self, name: str, image):
+        """
+        image can be PIL.Image, numpy HWC, or torch CHW/HWC.
+        """
+        writer = self.get_tb_writer()
+        if writer is None:
+            return
+
+        if hasattr(image, "mode"):  # PIL.Image
+            img = np.array(image)  # HWC uint8
+            img_t = torch.from_numpy(img)
+        elif isinstance(image, np.ndarray):
+            img_t = torch.from_numpy(image)
+        else:
+            img_t = image
+
+        # Ensure CHW
+        if img_t.ndim == 3 and img_t.shape[0] not in (1, 3, 4):  # likely HWC
+            img_t = img_t.permute(2, 0, 1)
+
+        # TensorBoard accepts uint8 [0..255] or float [0..1]
+        if img_t.dtype == torch.uint8:
+            pass
+        else:
+            img_t = img_t.float()
+            if img_t.max() > 1.0:
+                img_t = img_t / 255.0
+
+        writer.add_image(name, img_t, global_step=self.global_step)

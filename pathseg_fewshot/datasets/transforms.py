@@ -159,6 +159,8 @@ class SemanticTransforms(nn.Module):
         self.max_hue_delta = max_hue_delta / 360.0
 
         self.random_horizontal_flip = T.RandomHorizontalFlip()
+        self.random_vertical_flip = T.RandomVerticalFlip()
+
         # RandomCrop in v2 can take (img, target) if target contains tv_tensors / tensors
         self.random_crop = T.RandomCrop(img_size)
 
@@ -270,5 +272,6 @@ class SemanticTransforms(nn.Module):
         img, target = self.pad(img, target)
 
         img, target = self.random_horizontal_flip(img, target)
+        img, target = self.random_vertical_flip(img, target)
 
         return self.crop(img, target)

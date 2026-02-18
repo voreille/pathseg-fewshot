@@ -1,3 +1,4 @@
+# TODO: add a force option to avoid accidentally moving files when "copy" is intended, or vice versa
 from __future__ import annotations
 
 import json
