@@ -10,6 +10,7 @@ import openslide
 import pandas as pd
 import tifffile as tiff
 from PIL import Image, ImageDraw
+from scipy import ndimage as ndi
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -92,180 +93,390 @@ def select_level_for_magnification(
 # ----------------------------
 
 
+def _save_overview(
+    *,
+    wsi: openslide.OpenSlide,
+    mask_path: Path,
+    used_rois_lvl0: List[Tuple[int, int]],
+    kept_rois_lvl0: List[Tuple[int, int]],
+    strip_anchors_lvl0: List[Tuple[int, int]],
+    roi_size_at_target: int,
+    target_level: int,
+    out_path: Path,
+    overview_max_size: int = 2000,
+) -> None:
+    """Save thumbnail with (1) green binary mask overlay, (2) used grid, (3) kept tiles, (4) strip anchors."""
+    thumb_level = wsi.level_count - 1
+    tw, th = wsi.level_dimensions[thumb_level]
+    thumb = wsi.read_region((0, 0), thumb_level, (tw, th)).convert("RGB")
+
+    # downsample to max size
+    scale = 1.0
+    if max(thumb.size) > overview_max_size:
+        scale = overview_max_size / max(thumb.size)
+        thumb = thumb.resize(
+            (int(thumb.width * scale), int(thumb.height * scale)), Image.BILINEAR
+        )
+
+    ds_thumb = float(wsi.level_downsamples[thumb_level])
+    ds_target = float(wsi.level_downsamples[target_level])
+
+    def lvl0_to_thumb(v: int) -> int:
+        return int((v / ds_thumb) * scale)
+
+    # ROI size in level0 -> thumb
+    roi_size_lvl0 = int(round(roi_size_at_target * ds_target))
+    roi_size_thumb = max(1, int((roi_size_lvl0 / ds_thumb) * scale))
+
+    # --- binary mask overlay (green) using mask at thumb level for speed ---
+    with tiff.TiffFile(mask_path) as tf:
+        m = tf.pages[thumb_level].asarray()
+    if m.ndim == 3:
+        m = m[..., 0]
+    binary = (m > 0).astype(np.uint8)
+
+    mask_img = Image.fromarray(binary * 255).resize(thumb.size, Image.NEAREST)
+
+    thumb_rgba = thumb.convert("RGBA")
+    overlay = Image.new("RGBA", thumb.size, (0, 255, 0, 0))
+    # fast alpha mask: paste green where mask is nonzero
+    green = Image.new("RGBA", thumb.size, (0, 255, 0, 80))
+    overlay.paste(green, mask=mask_img)
+    thumb_rgba = Image.alpha_composite(thumb_rgba, overlay)
+    thumb = thumb_rgba.convert("RGB")
+
+    draw = ImageDraw.Draw(thumb)
+
+    # used grid (gray)
+    for x0, y0 in used_rois_lvl0:
+        x, y = lvl0_to_thumb(x0), lvl0_to_thumb(y0)
+        draw.rectangle(
+            [x, y, x + roi_size_thumb, y + roi_size_thumb],
+            outline=(180, 180, 180),
+            width=1,
+        )
+
+    # kept tiles (green)
+    for x0, y0 in kept_rois_lvl0:
+        x, y = lvl0_to_thumb(x0), lvl0_to_thumb(y0)
+        draw.rectangle(
+            [x, y, x + roi_size_thumb, y + roi_size_thumb], outline=(0, 255, 0), width=2
+        )
+
+    # strip anchors (blue)
+    r = max(2, roi_size_thumb // 20)
+    for x0, y0 in strip_anchors_lvl0:
+        cx, cy = lvl0_to_thumb(x0), lvl0_to_thumb(y0)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(0, 128, 255), width=2)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    thumb.save(out_path)
+
+
+# ----------------------------
+# Main tiling
+# ----------------------------
 def tile_wsi(
     wsi_path: Path,
     mask_path: Path,
     output_img_dir: Path,
     output_mask_dir: Path,
     dataset_id: str,
-    roi_size: int,
-    roi_stride: int,
+    tile_size: int,
+    tile_stride: int,
     target_mag: int,
     labelled_ratio_threshold: float = 0.8,
     min_label_pixels: int | None = None,
+    # mask work / speed
+    mask_work_level: int | None = None,  # if None: use lowest level
+    close_radius: int = 3,  # morphology radius in WORK-level pixels
+    fill_holes: bool = True,
+    speck_min_area_frac: float = 0.001,  # remove tiny objects as frac of 1 tile area (WORK-level)
+    # overview
     save_overview: bool = False,
     overview_dir: Path | None = None,
     overview_max_size: int = 2000,
-    start_short_candidates: int = 8,  # number of shifts to try within one ROI
 ) -> List[Dict[str, Any]]:
+    """
+    Fast component-wise biopsy tiling using low-res mask for geometry.
+
+    - Compute grid positions using cleaned binary mask at `mask_work_level` (fast).
+    - Discard small components (< 1 tile area at target mag, projected to work-level).
+    - For each component, do long-axis snapping + per-strip short-axis snapping.
+    - Read image tiles at `target_level` (OpenSlide), using level-0 coordinates.
+    - Read semantic mask tiles at `target_level` (tifffile), slice in target-level coords.
+    """
     wsi = openslide.OpenSlide(str(wsi_path))
 
+    # --- pick target level based on your existing helper ---
     mpp_x0, mpp_y0 = get_mpp(wsi)
-    level = select_level_for_magnification(wsi, target_mag)
-    ds = float(wsi.level_downsamples[level])
-    w, h = wsi.level_dimensions[level]
+    target_level = select_level_for_magnification(wsi, target_mag)
+    ds_target = float(wsi.level_downsamples[target_level])
+    wt, ht = wsi.level_dimensions[target_level]
 
-    # Read mask at the same level with tifffile
+    # --- choose mask work level (lowest by default) ---
+    if mask_work_level is None:
+        mask_work_level = wsi.level_count - 1
+    if not (0 <= mask_work_level < wsi.level_count):
+        raise ValueError(f"mask_work_level out of range: {mask_work_level}")
+
+    ds_work = float(wsi.level_downsamples[mask_work_level])
+    ww, hw = wsi.level_dimensions[mask_work_level]
+
+    # --- read mask at work level ---
     with tiff.TiffFile(mask_path) as tf:
-        mask = tf.pages[level].asarray()
-
-    if mask.ndim == 3:
-        logger.info("Mask is RGB, using channel 0.")
-        mask = mask[..., 0]
-
-    if mask.shape[:2] != (h, w):
+        mask_work = tf.pages[mask_work_level].asarray()
+    if mask_work.ndim == 3:
+        mask_work = mask_work[..., 0]
+    if mask_work.shape[:2] != (hw, ww):
         raise ValueError(
-            f"Mask/WSI mismatch at level {level}: "
-            f"WSI={w}x{h}, Mask={mask.shape[1]}x{mask.shape[0]}"
+            f"Mask/WSI mismatch at work level {mask_work_level}: "
+            f"WSI={ww}x{hw}, Mask={mask_work.shape[1]}x{mask_work.shape[0]}"
         )
 
-    if min_label_pixels is None:
-        min_label_pixels = int(0.05 * roi_size * roi_size)
+    # --- binary + morphology cleanup ---
+    bin_work = mask_work > 0
 
-    # bbox of non-zero
-    ys, xs = np.nonzero(mask > 0)
-    if xs.size == 0:
-        logger.warning(f"No labels in mask: {mask_path.name}")
+    if close_radius > 0:
+        # disk-ish structure
+        y, x = np.ogrid[
+            -close_radius : close_radius + 1, -close_radius : close_radius + 1
+        ]
+        selem = (x * x + y * y) <= close_radius * close_radius
+        bin_work = ndi.binary_closing(bin_work, structure=selem)
+
+    if fill_holes:
+        bin_work = ndi.binary_fill_holes(bin_work)
+
+    # ROI size projected to work level pixels
+    # ROI is defined at target level pixels -> convert to level0 -> convert to work level
+    roi_size_lvl0 = int(round(tile_size * ds_target))
+    roi_size_work = max(1, int(round(roi_size_lvl0 / ds_work)))
+    roi_stride_work = max(1, int(round((tile_stride * ds_target) / ds_work)))
+
+    roi_area_work = roi_size_work * roi_size_work
+
+    # remove tiny specks (before component filtering)
+    if speck_min_area_frac > 0:
+        min_speck_area = max(1, int(round(speck_min_area_frac * roi_area_work)))
+        lab0, n0 = ndi.label(bin_work)
+        if n0 > 0:
+            sizes = np.bincount(lab0.ravel())
+            keep = sizes >= min_speck_area
+            keep[0] = False
+            bin_work = keep[lab0]
+
+    # connected components on cleaned mask
+    labels, ncomp = ndi.label(bin_work)
+    if ncomp == 0:
+        logger.warning(f"No components after cleanup for {wsi_path.stem}")
         return []
 
-    xmin, xmax = int(xs.min()), int(xs.max()) + 1
-    ymin, ymax = int(ys.min()), int(ys.max()) + 1
+    # drop components smaller than 1 ROI coverage (in WORK-level pixels)
+    comp_sizes = np.bincount(labels.ravel())
+    min_comp_area = roi_area_work  # "coverage of the tile_size" at target -> projected into work-level
+    keep_comp = comp_sizes >= min_comp_area
+    keep_comp[0] = False
 
-    bw = xmax - xmin
-    bh = ymax - ymin
-    long_is_x = bw >= bh
+    kept_ids = np.where(keep_comp)[0]
+    logger.info(
+        f"{wsi_path.stem}: comps total={ncomp}, kept={len(kept_ids)} "
+        f"(min_comp_area_work={min_comp_area}, roi_size_work={roi_size_work})"
+    )
+
+    # filtering thresholds for tiles (work-level)
+    if min_label_pixels is None:
+        # default: 5% of ROI area at TARGET -> convert to WORK approximately
+        min_label_pixels_work = int(0.05 * roi_area_work)
+    else:
+        # user provided min_label_pixels at TARGET pixels; convert to WORK approximately
+        min_label_pixels_lvl0 = int(round(min_label_pixels * ds_target * ds_target))
+        min_label_pixels_work = max(
+            1, int(round(min_label_pixels_lvl0 / (ds_work * ds_work)))
+        )
+
+    used_rois_lvl0: List[Tuple[int, int]] = []
+    kept_rois_lvl0: List[Tuple[int, int]] = []
+    strip_anchors_lvl0: List[Tuple[int, int]] = []
+
+    rows: List[Dict[str, Any]] = []
 
     def clamp(v: int, lo: int, hi: int) -> int:
         return max(lo, min(v, hi))
 
-    # assign long/short coords
-    if long_is_x:
-        bmin_long, bmax_long, dim_long = xmin, xmax, w
-        bmin_short, bmax_short, dim_short = ymin, ymax, h
-    else:
-        bmin_long, bmax_long, dim_long = ymin, ymax, h
-        bmin_short, bmax_short, dim_short = xmin, xmax, w
+    # helper: map WORK-level (xw,yw) -> level0 coords
+    def work_to_lvl0(xw: int, yw: int) -> Tuple[int, int]:
+        return int(round(xw * ds_work)), int(round(yw * ds_work))
 
-    # snap long window to multiple of roi_size (ceil)
-    span_long = bmax_long - bmin_long
-    n_long = int(np.ceil(span_long / roi_size))
-    snapped_long = max(roi_size, n_long * roi_size)
-    pad_long = snapped_long - span_long
+    # helper: map level0 coords -> TARGET-level coords (for slicing target mask)
+    def lvl0_to_target(x0: int, y0: int) -> Tuple[int, int]:
+        return int(round(x0 / ds_target)), int(round(y0 / ds_target))
 
-    start_long = bmin_long - pad_long // 2
-    start_long = clamp(start_long, 0, dim_long - snapped_long)
-    end_long = start_long + snapped_long
+    # read target-level semantic mask once per slide (cheaper than reopening per tile)
+    with tiff.TiffFile(mask_path) as tf:
+        mask_target = tf.pages[target_level].asarray()
+    if mask_target.ndim == 3:
+        mask_target = mask_target[..., 0]
+    if mask_target.shape[:2] != (ht, wt):
+        raise ValueError(
+            f"Mask/WSI mismatch at target level {target_level}: "
+            f"WSI={wt}x{ht}, Mask={mask_target.shape[1]}x{mask_target.shape[0]}"
+        )
 
-    # candidate short starts: shift around bbox start by up to ~1 ROI
-    # (this is what makes the grid "dynamic")
-    if start_short_candidates <= 1:
-        shifts = [0]
-    else:
-        step = max(1, roi_size // start_short_candidates)
-        shifts = list(range(0, roi_size, step))[:start_short_candidates]
+    # ---- process each kept component independently ----
+    for comp_id in kept_ids.tolist():
+        comp = labels == comp_id
 
-    all_rois: List[Tuple[int, int]] = []
-    selected_rois: List[Tuple[int, int]] = []
-    rows: List[Dict[str, Any]] = []
+        ys, xs = np.nonzero(comp)
+        if xs.size == 0:
+            continue
+        xmin, xmax = int(xs.min()), int(xs.max()) + 1
+        ymin, ymax = int(ys.min()), int(ys.max()) + 1
+        bw = xmax - xmin
+        bh = ymax - ymin
+        long_is_x = bw >= bh
 
-    # iterate strips along long axis
-    for p_long in range(start_long, end_long - roi_size + 1, roi_stride):
-        # choose best start_short FOR THIS STRIP
-        best_start_short = None
-        best_score = -1
+        # work in (long, short) coords
+        if long_is_x:
+            bmin_long, bmax_long, dim_long = xmin, xmax, ww
+            bmin_short, bmax_short, dim_short = ymin, ymax, hw
+        else:
+            bmin_long, bmax_long, dim_long = ymin, ymax, hw
+            bmin_short, bmax_short, dim_short = xmin, xmax, ww
 
-        for sh in shifts:
-            # try starting a little before bbox start, shifted by sh
-            cand = bmin_short - sh
-            cand = clamp(cand, 0, dim_short - roi_size)
+        # snap long window to multiple of roi_size_work
+        span_long = bmax_long - bmin_long
+        n_long = int(np.ceil(span_long / roi_size_work))
+        snapped_long = max(roi_size_work, n_long * roi_size_work)
+        pad_long = snapped_long - span_long
 
-            score = 0
-            # score only within this strip
-            for p_short in range(cand, dim_short - roi_size + 1, roi_stride):
-                if long_is_x:
-                    patch = mask[
-                        p_short : p_short + roi_size, p_long : p_long + roi_size
-                    ]
-                else:
-                    patch = mask[
-                        p_long : p_long + roi_size, p_short : p_short + roi_size
-                    ]
-                score += int(np.count_nonzero(patch))
+        start_long = bmin_long - pad_long // 2
+        start_long = clamp(start_long, 0, dim_long - snapped_long)
+        end_long = start_long + snapped_long
 
-            if score > best_score:
-                best_score = score
-                best_start_short = cand
-
-        assert best_start_short is not None
-
-        # tile this strip using the chosen start_short
-        for p_short in range(best_start_short, dim_short - roi_size + 1, roi_stride):
+        # iterate strips along long axis
+        for p_long in range(start_long, end_long - roi_size_work + 1, roi_stride_work):
+            # extract strip of this component
             if long_is_x:
-                x, y = p_long, p_short
+                strip = comp[:, p_long : p_long + roi_size_work]
+                short_nonzero = np.where(np.any(strip, axis=1))[0]  # rows (y)
             else:
-                x, y = p_short, p_long
+                strip = comp[p_long : p_long + roi_size_work, :]
+                short_nonzero = np.where(np.any(strip, axis=0))[0]  # cols (x)
 
-            all_rois.append((x, y))
-
-            tile_mask = mask[y : y + roi_size, x : x + roi_size]
-            if tile_mask.shape != (roi_size, roi_size):
+            if short_nonzero.size == 0:
                 continue
 
-            label_pixels = int(np.count_nonzero(tile_mask))
-            ratio = label_pixels / tile_mask.size
+            bmin_short_strip = int(short_nonzero.min())
+            bmax_short_strip = int(short_nonzero.max()) + 1
 
-            if ratio < labelled_ratio_threshold and label_pixels < min_label_pixels:
-                continue
+            span_short = bmax_short_strip - bmin_short_strip
+            n_short = int(np.ceil(span_short / roi_size_work))
+            snapped_short = max(roi_size_work, n_short * roi_size_work)
+            pad_short = snapped_short - span_short
 
-            tile_img = wsi.read_region((x, y), level, (roi_size, roi_size)).convert(
-                "RGB"
-            )
+            start_short = bmin_short_strip - pad_short // 2
+            start_short = clamp(start_short, 0, dim_short - snapped_short)
+            end_short = start_short + snapped_short
 
-            img_name = f"{wsi_path.stem}_L{level}_{x}_{y}.png"
-            msk_name = f"{wsi_path.stem}_L{level}_{x}_{y}.png"
+            # record anchor (work -> lvl0)
+            if long_is_x:
+                xw_anchor, yw_anchor = p_long, start_short
+            else:
+                xw_anchor, yw_anchor = start_short, p_long
+            strip_anchors_lvl0.append(work_to_lvl0(xw_anchor, yw_anchor))
 
-            tile_img.save(output_img_dir / img_name)
-            Image.fromarray(tile_mask.astype(np.uint8)).save(output_mask_dir / msk_name)
+            for p_short in range(
+                start_short, end_short - roi_size_work + 1, roi_stride_work
+            ):
+                if long_is_x:
+                    xw, yw = p_long, p_short
+                else:
+                    xw, yw = p_short, p_long
 
-            selected_rois.append((x, y))
+                # work-level tile mask for filtering (fast)
+                tile_comp = comp[yw : yw + roi_size_work, xw : xw + roi_size_work]
+                if tile_comp.shape != (roi_size_work, roi_size_work):
+                    continue
 
-            rows.append(
-                {
-                    "dataset_id": dataset_id,
-                    "sample_id": wsi_path.stem,
-                    "group": wsi_path.stem,
-                    "image_relpath": str(Path("images") / img_name),
-                    "mask_relpath": str(Path("masks_semantic") / msk_name),
-                    "width": roi_size,
-                    "height": roi_size,
-                    "mpp_x": mpp_x0 * ds,
-                    "mpp_y": mpp_y0 * ds,
-                    "magnification": target_mag,
-                    "level": level,
-                    "level_downsample": ds,
-                    "labelled_ratio": ratio,
-                    "label_pixels": label_pixels,
-                }
-            )
+                label_pixels_w = int(np.count_nonzero(tile_comp))
+                ratio_w = label_pixels_w / tile_comp.size
+
+                # keep if ratio ok OR enough absolute label pixels (work-level)
+                if (
+                    ratio_w < labelled_ratio_threshold
+                    and label_pixels_w < min_label_pixels_work
+                ):
+                    continue
+
+                # map to level0 (for read_region)
+                x0, y0 = work_to_lvl0(xw, yw)
+                used_rois_lvl0.append((x0, y0))
+
+                # read image at target level (size = roi_size at target)
+                tile_img = wsi.read_region(
+                    (x0, y0), target_level, (tile_size, tile_size)
+                ).convert("RGB")
+
+                # read target-level semantic mask (slice using target coords)
+                xt, yt = lvl0_to_target(x0, y0)
+                tile_mask_t = mask_target[yt : yt + tile_size, xt : xt + tile_size]
+                if tile_mask_t.shape != (tile_size, tile_size):
+                    continue
+
+                # optional: also ensure not empty at target (in case of rounding)
+                if np.all(tile_mask_t == 0):
+                    continue
+
+                img_name = f"{wsi_path.stem}_L{target_level}_{x0}_{y0}.png"
+                msk_name = f"{wsi_path.stem}_L{target_level}_{x0}_{y0}.png"
+
+                tile_img.save(output_img_dir / img_name)
+                Image.fromarray(tile_mask_t.astype(np.uint8)).save(
+                    output_mask_dir / msk_name
+                )
+
+                kept_rois_lvl0.append((x0, y0))
+
+                rows.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "sample_id": wsi_path.stem,
+                        "group": wsi_path.stem,
+                        "image_relpath": str(Path("images") / img_name),
+                        "mask_relpath": str(Path("masks_semantic") / msk_name),
+                        "width": tile_size,
+                        "height": tile_size,
+                        "mpp_x": mpp_x0 * ds_target,
+                        "mpp_y": mpp_y0 * ds_target,
+                        "magnification": target_mag,
+                        "target_level": target_level,
+                        "target_level_downsample": ds_target,
+                        "mask_work_level": mask_work_level,
+                        "mask_work_downsample": ds_work,
+                        "component_id": int(comp_id),
+                    }
+                )
+
+    # overview
+    if save_overview and overview_dir is not None:
+        out_path = overview_dir / f"{wsi_path.stem}_L{target_level}_overview.png"
+        _save_overview(
+            wsi=wsi,
+            mask_path=mask_path,
+            used_rois_lvl0=used_rois_lvl0,
+            kept_rois_lvl0=kept_rois_lvl0,
+            strip_anchors_lvl0=strip_anchors_lvl0,
+            roi_size_at_target=tile_size,
+            target_level=target_level,
+            out_path=out_path,
+            overview_max_size=overview_max_size,
+        )
 
     logger.info(
-        f"{wsi_path.stem}: total={len(all_rois)} kept={len(selected_rois)} "
-        f"(thr={labelled_ratio_threshold}, min_pixels={min_label_pixels})"
+        f"{wsi_path.stem}: tiles kept={len(rows)} "
+        f"(work_level={mask_work_level}, target_level={target_level})"
     )
-
-    # keep your existing overview code; it will now show strip-specific shifts
-    # (all_rois vs selected_rois)
-
     return rows
 
 
@@ -423,8 +634,8 @@ def tile_wsi_grid(
 )
 @click.option("--output-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--dataset-id", default="panda", show_default=True)
-@click.option("--tile-size", default=1120, show_default=True)
-@click.option("--tile-stride", default=1120, show_default=True)
+@click.option("--tile-size", default=1792, show_default=True)
+@click.option("--tile-stride", default=1792, show_default=True)
 @click.option("--target-magnification", default=20, show_default=True)
 @click.option("--labelled-ratio-threshold", default=0.8, show_default=True)
 @click.option("--save-overview", is_flag=True, default=False, show_default=True)
